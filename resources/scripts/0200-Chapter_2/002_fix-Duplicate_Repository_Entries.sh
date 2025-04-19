@@ -28,7 +28,7 @@ EOF
 chmod +x /tmp/fix_duplicate_entries.sh
 
 # Execute on all nodes
-echo "Fixing duplicate repository entries locally..."
+echo "Fixing duplicate repository entries on 172.16.0.1 ..."
 bash /tmp/fix_duplicate_entries.sh
 
 for NODE in 172.16.0.2 172.16.0.3; do

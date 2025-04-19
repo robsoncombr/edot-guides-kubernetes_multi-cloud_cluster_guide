@@ -22,7 +22,7 @@ EOF
 chmod +x /tmp/fix_helm_gpg.sh
 
 # Execute on all nodes
-echo "Fixing Helm GPG key locally..."
+echo "Fixing Helm GPG key on 172.16.0.1 ..."
 bash /tmp/fix_helm_gpg.sh
 for NODE in 172.16.0.2 172.16.0.3; do
   echo "Fixing Helm GPG key on $NODE..."

@@ -40,7 +40,7 @@ EOF
 chmod +x /tmp/disable_swap.sh
 
 # Execute on all nodes
-echo "Disabling swap locally..."
+echo "Disabling swap on 172.16.0.1 ..."
 bash /tmp/disable_swap.sh
 for NODE in 172.16.0.2 172.16.0.3; do
   echo "Disabling swap on $NODE..."
