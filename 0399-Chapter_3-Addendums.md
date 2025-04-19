@@ -1,5 +1,7 @@
 # Cleaning Up Kubernetes Before Fresh Installation
 
+TODO: to be reviwed after changes in script to make sure it is compliant
+
 This document outlines the steps to completely clean up an existing Kubernetes cluster before performing a fresh installation. These steps ensure all components are properly removed to prevent conflicts with the new installation. Useful for scenarios where you need to reset a previous cluster setup to start from scratch while learning phases.
 
 Find the automation script for this process in scripts at:

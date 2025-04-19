@@ -20,5 +20,3 @@ docker --version
 ```bash
 ip addr show | grep 172.16.0
 ```
-
-## 2.4 Network Connectivity Verification
