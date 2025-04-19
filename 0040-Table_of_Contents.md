@@ -1,39 +1,3 @@
-# Kubernetes Multi-Cloud Cluster Guide
-
-## Setting Up a 3-Node Kubernetes Cluster Across Different Cloud Providers Using WireGuard VPN
-
-### Project Overview
-This guide is designed for IT professionals and students to achieve the final goal of configuring a 3-Node Kubernetes Cluster using VPS servers, that can run in different Cloud Providers, that will be connected transparently through a VPN, with 1 control plane node and 2 worker nodes.
-
-### Target Audience
-This guide assumes a medium to senior level of knowledge working as DevOps, who is being introduced to Kubernetes, it is out of the scope here to explain or present basic commands, tools or pre-knowledge required.
-We will simulate a scenario where a company is migrating to Kubernetes architecture, and the DevOps team needs to become specialized and self-sufficient to deploy the environment, secure it and support, maintaining it consistently.
-
-## Prologue
-
-### TDOO
-- Add a prologue to explain the purpose of the guide, mention thanks to contributors, and provide a brief overview of the project.
-
-## Tools and Third-Party Software
-
-### All dependencies can only be used if they are Fully Open-Source and Free Commercial
-
-## Prerequisites
-
-### Not included in this guide, for hardware configuration refer to Kubernetes official documentation
-- 3 VPS instances with Ubuntu 24.04, fully upgraded and ready
-  - The specific cloud provider is not relevant to this guide
-  - Only hardware configuration (CPU, RAM, Storage), Hostnames (for node names), and VPN IPs are relevant
-- VPN will be configured using WireGuard with network 172.16.0.0/16
-  - Control plane: 172.16.0.1
-  - Worker node 1: 172.16.0.2
-  - Worker node 2: 172.16.0.3
-  - All inter-node communication must occur through the VPN
-- Docker CE installed and operational
-  - Kubernetes will be configured to use Docker's container service
-  - Docker daemon file needs configuration to work properly with Kubernetes
-  - Ability to run Docker containers in parallel with Kubernetes
-
 ## Table of Contents
 
 ### Chapter 1: Introduction and Architecture Overview
@@ -124,5 +88,3 @@ We will simulate a scenario where a company is migrating to Kubernetes architect
 - Acknowledgments and credits
 - Contact information for contributors and maintainers
 - License information and terms of use
-
-## 
