@@ -5,7 +5,7 @@ TODO: to be reviwed after changes in script to make sure it is compliant
 This document outlines the steps to completely clean up an existing Kubernetes cluster before performing a fresh installation. These steps ensure all components are properly removed to prevent conflicts with the new installation. Useful for scenarios where you need to reset a previous cluster setup to start from scratch while learning phases.
 
 Find the automation script for this process in scripts at:
-[`0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh`](./resources/scripts/0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh)
+[`0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh`](./resources/scripts/0300-Chapter_3/0399-Chapter_3-Addendums/0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh)
 <br>
 *Note: Make sure you read the important notes below and the documentation inside the script before executing it.*
 
