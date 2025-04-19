@@ -9,7 +9,11 @@
   - Control plane: 172.16.0.1
   - Worker node 1: 172.16.0.2
   - Worker node 2: 172.16.0.3
-  - All inter-node communication must occur through the VPN
+  - All inter-node communication must occur through the VPN (from SSH to all Kubernetes components)
+- SSH access to all nodes
+  - SSH access is required for the installation process and for future management of the cluster
+  - To make it safer and easier to run and automate, configure the SSH servers on each VPS to accept connections authenticated by SSH keys and allow connection as root
+  - SSH keys should be generated and copied to all nodes for passwordless access
 - [Docker CE](https://docs.docker.com/engine/install/ubuntu/) installed and operational (followed APT method)
   - Kubernetes will be configured to use Docker's container service
   - Docker daemon file needs configuration to work properly with Kubernetes

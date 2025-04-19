@@ -1,0 +1,22 @@
+# Environment variables
+.env
+**/.env
+**/.env.*
+**/.env.local
+**/.env.development
+**/.env.test
+**/.env.production
+
+# Local environment files
+**/env/
+**/environments/
+
+# Kubernetes secret files
+**/secrets/
+**/*.secret
+**/*.secret.yaml
+**/*.secret.yml
+
+# Terraform variables
+**/*.tfvars
+**/*.tfvars.json
