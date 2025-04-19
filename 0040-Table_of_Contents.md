@@ -7,10 +7,9 @@
 - Overall project architecture diagram
 
 ### [Chapter 2: Environment Preparation and Verification](0200-Chapter_2-Environment_Preparation_and_Verification.md)
-- Hardware requirements verification
+- Operating System and Hardware Requirements
 - Docker configuration for Kubernetes compatibility
 - WireGuard VPN confirmation and testing
-- Network connectivity verification
 
 ### [Chapter 3: Kubernetes Installation and Basic Configuration](0300-Chapter_3-Kubernetes_Installation_and_Basic_Configuration.md)
 - Installing Kubernetes components (kubelet, kubeadm, kubectl)
@@ -91,3 +90,7 @@
 - Acknowledgments and credits
 - Contact information for contributors and maintainers
 - License information and terms of use
+
+---
+
+**Next**: [Chapter 1: Introduction and Architecture Overview](0100-Chapter_1-Introduction_and_Architecture_Overview.md)

@@ -295,6 +295,12 @@ if [ "$1" = "remove_packages" ]; then
     # Fix any potential broken packages
     apt-get --fix-broken install -y 2>/dev/null || true
     
+    # Clean up Kubernetes repository and GPG key
+    echo -e "${GREEN}[INFO]${NC} Removing Kubernetes repository and GPG key..."
+    rm -f /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+    rm -f /etc/apt/sources.list.d/kubernetes.list
+    apt-get update
+
     echo -e "${GREEN}[INFO]${NC} Kubernetes packages removal process completed."
 fi
 

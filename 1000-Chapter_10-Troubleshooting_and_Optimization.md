@@ -7,3 +7,7 @@
 ## 10.3 Network Debugging Tools
 
 ## 10.4 Resource Utilization Analysis
+
+---
+
+**Next**: [Appendix: Resources and References](9999-Appendix.md)

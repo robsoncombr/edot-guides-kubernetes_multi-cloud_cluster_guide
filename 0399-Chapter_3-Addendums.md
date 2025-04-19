@@ -240,3 +240,7 @@ If container runtime cleanup fails:
 ## Next Steps
 
 After completing the cleanup process, your systems should be ready for a fresh Kubernetes installation.
+
+---
+
+**Next**: [Chapter 4: Networking with CNI Implementation](0400-Chapter_4-Networking_with_CNI_Implementation.md)

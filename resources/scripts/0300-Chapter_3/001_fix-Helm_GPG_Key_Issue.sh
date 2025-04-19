@@ -1,5 +1,8 @@
 #!/bin/bash
 
+#* This script was invoked by 001-Add_Kubernetes_Repositories_and_Install.sh, but I have implemented the removal of keys and repositories in '/resources/scripts/0399-Chapter_3-Addendums/0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh'
+#* Decided to keep the script for future reference, but it is not used in the current setup.
+
 # Create a script to fix Helm GPG key
 cat > /tmp/fix_helm_gpg.sh << 'EOF'
 #!/bin/bash

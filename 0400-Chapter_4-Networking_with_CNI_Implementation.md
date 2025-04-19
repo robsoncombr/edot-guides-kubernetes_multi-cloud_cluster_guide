@@ -296,3 +296,7 @@ For multi-cloud Kubernetes deployments, you might need to establish communicatio
    - Configure routing to allow pod-to-pod communication
 
 For our multi-cloud setup, we've already established VPN connectivity between nodes across different cloud providers, which forms the foundation for multi-cluster communication.
+
+---
+
+**Next**: [Chapter 5: Scheduling and Cron Jobs](0500-Chapter_5-Scheduling_and_Cron_Jobs.md)

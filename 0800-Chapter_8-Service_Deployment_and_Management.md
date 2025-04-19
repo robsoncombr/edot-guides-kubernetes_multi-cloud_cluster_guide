@@ -7,3 +7,7 @@
 ## 8.3 Ingress Controllers and Configurations
 
 ## 8.4 Load Balancing Across Workers
+
+---
+
+**Next**: [Chapter 9: Monitoring and Maintenance](0900-Chapter_9-Monitoring_and_Maintenance.md)

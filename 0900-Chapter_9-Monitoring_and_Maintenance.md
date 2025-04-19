@@ -7,3 +7,7 @@
 ## 9.3 Backup and Recovery Procedures
 
 ## 9.4 Cluster Upgrades and Patching Strategies
+
+---
+
+**Next**: [Chapter 10: Troubleshooting and Optimization](1000-Chapter_10-Troubleshooting_and_Optimization.md)

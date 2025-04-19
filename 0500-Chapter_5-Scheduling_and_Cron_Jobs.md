@@ -11,3 +11,7 @@
 ## 5.5 Advanced Scheduling Patterns and Best Practices
 
 ## 5.6 Job Dependencies and Workflow Orchestration
+
+---
+
+**Next**: [Chapter 6: Storage Configuration](0600-Chapter_6-Storage_Configuration.md)

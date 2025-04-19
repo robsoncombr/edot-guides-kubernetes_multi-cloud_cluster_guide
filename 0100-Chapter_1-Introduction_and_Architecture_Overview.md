@@ -7,3 +7,7 @@
 ## 1.3 Secure Communication with WireGuard VPN
 
 ## 1.4 Overall Project Architecture Diagram
+
+---
+
+**Next**: [Chapter 2: Environment Preparation and Verification](0200-Chapter_2-Environment_Preparation_and_Verification.md)

@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Fixes for installing dependencies on Ubuntu 22.04 for Kubernetes cluster setup
+# First Apply Fixes
 ./002_fix-Duplicate_Repository_Entries.sh
-./002_fix-Helm_GPG_Key_Issue.sh
 
 # Create a dependencies installation script
 cat > /tmp/install_dependencies.sh << 'EOF'

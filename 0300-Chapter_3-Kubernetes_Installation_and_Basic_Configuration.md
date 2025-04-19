@@ -496,3 +496,7 @@ kubectl get nodes
 [Addendums](./0399-Chapter_3-Addendums.md):
 
 - Cleaning_Up_Kubernetes_Before_Fresh_Installation
+
+---
+
+**Next**: [Chapter 3 Addendums](0399-Chapter_3-Addendums.md)
