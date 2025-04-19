@@ -14,21 +14,24 @@
 
 ### [Chapter 3: Kubernetes Installation and Basic Configuration](0300-Chapter_3-Kubernetes_Installation_and_Basic_Configuration.md)
 - Installing Kubernetes components (kubelet, kubeadm, kubectl)
+  - Essential system dependencies
+  - Disabling swap
+  - Adding Kubernetes repository and GPG key
+  - Installing core Kubernetes packages
 - Initializing the control plane
+  - Container runtime configuration
+  - Kernel modules and system settings
+  - Control plane initialization
 - Setting up kubectl configuration
 - Joining worker nodes to the cluster
 - Management Solutions
   - Kubernetes Dashboard (native console)
-    - Introduction
-    - Installation and configuration
+    - Installation and authentication
     - Accessing the dashboard securely
   - KubeSphere as the primary management solution
-    - Introduction
     - Features and benefits
-    - Add-ons and plugins
-    - Advanced features (e.g., DevOps pipelines, monitoring)
     - Installation and configuration
-  - Other management alternatives (for future documentation, once validated)
+  - Other management alternatives
 
 ### [Chapter 4: Networking with CNI Implementation](0400-Chapter_4-Networking_with_CNI_Implementation.md)
 - CNI overview and selection criteria
