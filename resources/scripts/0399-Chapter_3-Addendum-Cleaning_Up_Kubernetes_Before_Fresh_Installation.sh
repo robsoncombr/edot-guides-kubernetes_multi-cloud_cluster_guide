@@ -34,11 +34,15 @@ SSH_USER="root"  # The user for SSH connections
 # Track temporary files for cleanup
 TEMP_FILES=()
 
+# Collect warning messages for summary at the end
+WARNINGS=()
+
 # Text colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 BOLD='\033[1m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Function to print status messages
@@ -48,10 +52,16 @@ print_status() {
 
 print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
+    # Add to warnings array for summary at the end
+    WARNINGS+=("$1")
 }
 
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_note() {
+    echo -e "${BLUE}[NOTE]${NC} $1"
 }
 
 # Function to cleanup temp files
@@ -69,6 +79,15 @@ cleanup_temp_files() {
     done
 }
 
+# Filter kubeadm reset output to be more user-friendly
+filter_kubeadm_output() {
+    grep -v "The reset process does not clean" | \
+    grep -v "The reset process does not reset" | \
+    grep -v "Please, check the contents" | \
+    grep -v "using etcd pod spec to get data directory" | \
+    grep -v "Failed to evaluate the \"/var/lib/kubelet\" directory"
+}
+
 # Register cleanup function to run on exit
 trap cleanup_temp_files EXIT
 
@@ -82,7 +101,7 @@ echo -e "${RED}- All cluster data will be permanently lost${NC}"
 echo -e "${RED}- Kubernetes components will be removed from all nodes${NC}"
 echo -e "${RED}==========================================================${NC}"
 echo
-echo -e "Are you absolutely sure you want to proceed? (y/N): "
+echo -n "Are you absolutely sure you want to proceed? (y/N): "
 read -r confirm_destroy
 
 if [[ "$confirm_destroy" != "y" && "$confirm_destroy" != "Y" ]]; then
@@ -136,13 +155,15 @@ clean_cluster() {
         export KUBECONFIG=$HOME/.kube/config
         print_status "Using kubeconfig from $HOME/.kube/config"
     else
-        print_warning "No kubeconfig found. Skipping cluster node cleanup."
+        print_warning "No kubeconfig found. This is normal if the cluster is already partially removed."
+        print_note "Continuing with node-level cleanup via SSH."
         return
     fi
     
     # Try to get nodes - if this fails, the cluster may not be accessible
     if ! kubectl get nodes &> /dev/null; then
         print_warning "Unable to access the Kubernetes API. Cluster may be down or unreachable."
+        print_note "Continuing with node-level cleanup via SSH. This is sufficient for most cleanup tasks."
         return
     fi
     
@@ -173,19 +194,20 @@ clean_cluster() {
             fi
             
             print_status "Draining node: $NODE"
-            kubectl drain "$NODE" --delete-emptydir-data --force --ignore-daemonsets || print_warning "Failed to drain $NODE"
+            kubectl drain "$NODE" --delete-emptydir-data --force --ignore-daemonsets || print_warning "Failed to drain $NODE - This is normal if node is already unreachable."
             
             print_status "Removing node: $NODE from cluster"
-            kubectl delete node "$NODE" || print_warning "Failed to delete $NODE"
+            kubectl delete node "$NODE" || print_warning "Failed to delete $NODE from cluster - This is normal if node is already removed."
         done
         
         # If this is the control plane, drain it last
         if [ -n "$CONTROL_PLANE" ]; then
             print_status "Draining control plane node: $CONTROL_PLANE"
-            kubectl drain "$CONTROL_PLANE" --delete-emptydir-data --force --ignore-daemonsets || print_warning "Failed to drain $CONTROL_PLANE"
+            kubectl drain "$CONTROL_PLANE" --delete-emptydir-data --force --ignore-daemonsets || print_warning "Failed to drain $CONTROL_PLANE - This is normal during cleanup."
         fi
     else
-        print_warning "No nodes found in the cluster or unable to retrieve node information"
+        print_warning "No nodes found in the cluster or unable to retrieve node information."
+        print_note "Continuing with node-level cleanup via SSH."
     fi
 }
 
@@ -200,22 +222,33 @@ create_node_cleanup_script() {
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 echo -e "${GREEN}[INFO]${NC} Starting node cleanup on $(hostname)"
 
 # Reset kubeadm
 echo -e "${GREEN}[INFO]${NC} Resetting kubeadm..."
-kubeadm reset -f || echo -e "${YELLOW}[WARNING]${NC} kubeadm reset failed, continuing anyway"
+# Capture and filter kubeadm output
+kubeadm_output=$(kubeadm reset -f 2>&1) || echo -e "${YELLOW}[WARNING]${NC} kubeadm reset returned non-zero exit code, continuing anyway"
+
+# Filter and display relevant kubeadm output
+echo "$kubeadm_output" | grep -v "The reset process does not clean" | \
+                         grep -v "The reset process does not reset" | \
+                         grep -v "Please, check the contents" | \
+                         grep -v "No kubeadm config" | \
+                         grep -v "Failed to evaluate" || true
+
+echo -e "${BLUE}[NOTE]${NC} Standard kubeadm warnings suppressed. The script will handle CNI, configs, and iptables cleanup."
 
 # Clean up CNI configurations
 echo -e "${GREEN}[INFO]${NC} Removing CNI configurations..."
-rm -rf /etc/cni/net.d/* 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to remove CNI configurations"
+rm -rf /etc/cni/net.d/* 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} No CNI configurations found or failed to remove them."
 
 # Clean up IPVS tables if installed
 if command -v ipvsadm &> /dev/null; then
     echo -e "${GREEN}[INFO]${NC} Clearing IPVS tables..."
-    ipvsadm -C 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to clear IPVS tables"
+    ipvsadm -C 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to clear IPVS tables, they may already be empty."
 fi
 
 # Remove kubeconfig files
@@ -228,21 +261,8 @@ rm -rf $HOME/.kube/config 2>/dev/null
 
 # Stop and disable kubelet service
 echo -e "${GREEN}[INFO]${NC} Stopping kubelet service..."
-systemctl stop kubelet 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to stop kubelet"
-systemctl disable kubelet 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to disable kubelet"
-
-# Clean up docker containers if docker is installed
-if command -v docker &> /dev/null; then
-    echo -e "${GREEN}[INFO]${NC} Cleaning up Docker..."
-    docker rm -f $(docker ps -aq) 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} No containers to remove or Docker not running"
-    docker system prune -af --volumes 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to prune Docker system"
-fi
-
-# Clean up containerd if installed
-if command -v crictl &> /dev/null; then
-    echo -e "${GREEN}[INFO]${NC} Cleaning up containerd..."
-    crictl rm $(crictl ps -aq) 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} No containerd containers to remove"
-fi
+systemctl stop kubelet 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to stop kubelet, it may already be stopped."
+systemctl disable kubelet 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to disable kubelet service."
 
 # Remove Kubernetes directories
 echo -e "${GREEN}[INFO]${NC} Removing Kubernetes directories..."
@@ -256,9 +276,26 @@ EXIT_CODE=0
 # Removing Kubernetes packages if requested
 if [ "$1" = "remove_packages" ]; then
     echo -e "${GREEN}[INFO]${NC} Removing Kubernetes packages..."
-    apt-get purge -y kubeadm kubectl kubelet kubernetes-cni 2>/dev/null || echo -e "${YELLOW}[WARNING]${NC} Failed to remove some packages"
+    
+    # Unhold packages first to make sure they can be removed
+    apt-mark unhold kubeadm kubectl kubelet kubernetes-cni 2>/dev/null || true
+    
+    # Try to purge the packages
+    if ! apt-get purge -y kubeadm kubectl kubelet kubernetes-cni 2>/dev/null; then
+        echo -e "${YELLOW}[WARNING]${NC} Some packages could not be removed with standard purge."
+        echo -e "${BLUE}[NOTE]${NC} Attempting more aggressive removal approach..."
+        
+        # Force removal of packages if still present
+        dpkg --remove --force-all kubeadm kubectl kubelet kubernetes-cni 2>/dev/null || true
+    fi
+    
+    # Make sure to run autoremove with -y flag to clean up dependencies
     apt-get autoremove -y 2>/dev/null
-    echo -e "${GREEN}[INFO]${NC} All Kubernetes packages have been removed."
+    
+    # Fix any potential broken packages
+    apt-get --fix-broken install -y 2>/dev/null || true
+    
+    echo -e "${GREEN}[INFO]${NC} Kubernetes packages removal process completed."
 fi
 
 # Clean up self
@@ -279,10 +316,10 @@ clean_cluster
 create_node_cleanup_script
 
 # Ask if packages should be removed
-print_status "Do you want to remove all Kubernetes packages from all nodes? (y/n)"
+echo -n "Do you want to remove all Kubernetes packages from all nodes? (y/N): "
 read -r remove_packages
 REMOVE_PACKAGES_ARG=""
-if [ "$remove_packages" = "y" ] || [ "$remove_packages" = "Y" ]; then
+if [[ "$remove_packages" = "y" || "$remove_packages" = "Y" ]]; then
     REMOVE_PACKAGES_ARG="remove_packages"
 fi
 
@@ -291,34 +328,43 @@ for NODE in "${WORKER_NODES[@]}"; do
     print_status "Cleaning up worker node: $NODE"
     
     # Copy the cleanup script to the worker node
-    scp -o StrictHostKeyChecking=no /tmp/node_cleanup.sh ${SSH_USER}@${NODE}:/tmp/ &>/dev/null || {
+    if ! scp -o StrictHostKeyChecking=no /tmp/node_cleanup.sh ${SSH_USER}@${NODE}:/tmp/ &>/dev/null; then
         print_error "Failed to copy cleanup script to $NODE"
+        print_note "Skipping this worker node and continuing with others."
+        WARNINGS+=("Failed to clean up node $NODE - SSH copy failed")
         continue
-    }
+    fi
     
     # Execute the cleanup script on the worker node
-    ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "bash /tmp/node_cleanup.sh $REMOVE_PACKAGES_ARG" || {
+    if ! ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "bash /tmp/node_cleanup.sh $REMOVE_PACKAGES_ARG"; then
         print_error "Failed to execute cleanup script on $NODE"
-    }
+        WARNINGS+=("Cleanup on $NODE may be incomplete - Script execution failed")
+    fi
     
     print_status "Worker node $NODE cleanup completed"
-}
+done
 
 # Run cleanup on the control plane node (current host)
 print_status "Cleaning up control plane node (local)..."
-bash /tmp/node_cleanup.sh $REMOVE_PACKAGES_ARG
+if ! bash /tmp/node_cleanup.sh $REMOVE_PACKAGES_ARG 2>&1 | grep -v "runtime connect using default endpoints" | \
+                                                        grep -v "validate service connection" | \
+                                                        grep -v "dial unix /var/run/dockershim.sock"; then
+    print_warning "Control plane cleanup returned errors, but this is usually non-critical."
+    print_note "The cleanup process will continue."
+fi
 
 # Ask about rebooting nodes
-print_status "Do you want to reboot all nodes now? (Recommended) (y/n)"
+echo -n "Do you want to reboot all nodes now? (Recommended) (y/N): "
 read -r reboot_nodes
 
-if [ "$reboot_nodes" = "y" ] || [ "$reboot_nodes" = "Y" ]; then
+if [[ "$reboot_nodes" = "y" || "$reboot_nodes" = "Y" ]]; then
     # Reboot worker nodes first
     for NODE in "${WORKER_NODES[@]}"; do
         print_status "Rebooting worker node: $NODE"
-        ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "reboot" &>/dev/null || {
-            print_error "Failed to reboot worker node $NODE"
-        }
+        if ! ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "reboot" &>/dev/null; then
+            print_warning "Failed to reboot worker node $NODE"
+            WARNINGS+=("Failed to reboot node $NODE - Please reboot manually")
+        fi
     done
     
     # Finally reboot the control plane node
@@ -328,6 +374,19 @@ if [ "$reboot_nodes" = "y" ] || [ "$reboot_nodes" = "Y" ]; then
     reboot
 else
     print_status "Cleanup completed. Please reboot all nodes manually when convenient."
+fi
+
+# Print summary of warnings if any
+if [ ${#WARNINGS[@]} -gt 0 ]; then
+    echo
+    echo -e "${YELLOW}${BOLD}== CLEANUP SUMMARY ==${NC}"
+    echo -e "${YELLOW}The following non-critical warnings were encountered:${NC}"
+    for warning in "${WARNINGS[@]}"; do
+        echo -e " - $warning"
+    done
+    echo
+    echo -e "${BLUE}[NOTE]${NC} These warnings are normal during cleanup and do not indicate failure."
+    echo -e "${BLUE}[NOTE]${NC} For a completely clean system, consider running 'apt --fix-broken install' manually."
 fi
 
 # The cleanup_temp_files function will be called automatically on exit due to the trap

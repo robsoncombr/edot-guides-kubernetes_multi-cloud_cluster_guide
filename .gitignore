@@ -20,3 +20,8 @@
 # Terraform variables
 **/*.tfvars
 **/*.tfvars.json
+
+# Workspace
+# Use this directory for your own practices, but do not include it in the repository.
+**/workspace/*
+!**/workspace/.keep
