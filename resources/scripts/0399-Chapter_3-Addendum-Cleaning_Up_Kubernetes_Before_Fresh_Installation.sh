@@ -239,7 +239,7 @@ echo "$kubeadm_output" | grep -v "The reset process does not clean" | \
                          grep -v "No kubeadm config" | \
                          grep -v "Failed to evaluate" || true
 
-echo -e "${BLUE}[NOTE]${NC} Standard kubeadm warnings suppressed. The script will handle CNI, configs, and iptables cleanup."
+echo -e "${BLUE}[NOTE]${NC} Standard kubeadm warnings suppressed. The script will handle CNI and configs cleanup."
 
 # Clean up CNI configurations
 echo -e "${GREEN}[INFO]${NC} Removing CNI configurations..."
