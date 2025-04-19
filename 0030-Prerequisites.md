@@ -17,3 +17,5 @@
 ## Tools and Third-Party Software
 
 ### All dependencies can only be used if they are Fully Open-Source and Free Commercially Licensed
+
+### Next - [Table of Contents](0040-Table_of_Contents.md)
