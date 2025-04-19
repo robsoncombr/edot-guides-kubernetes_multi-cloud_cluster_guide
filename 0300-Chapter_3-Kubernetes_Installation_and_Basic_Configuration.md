@@ -490,3 +490,9 @@ kubectl get nodes
 ```
 
 > **Note:** Nodes will remain in NotReady state until a CNI plugin is installed. Installation of management interfaces and dashboards will be covered in Chapter 7: Advanced Cluster Configuration.
+
+## Next
+
+[Addendums](./0399-Chapter_3-Addendums.md):
+
+- Cleaning_Up_Kubernetes_Before_Fresh_Installation
