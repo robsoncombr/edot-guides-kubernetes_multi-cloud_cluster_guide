@@ -1,0 +1,128 @@
+# Kubernetes Multi-Cloud Cluster Guide
+
+## Setting Up a 3-Node Kubernetes Cluster Across Different Cloud Providers Using WireGuard VPN
+
+### Project Overview
+This guide is designed for IT professionals and students to achieve the final goal of configuring a 3-Node Kubernetes Cluster using VPS servers, that can run in different Cloud Providers, that will be connected transparently through a VPN, with 1 control plane node and 2 worker nodes.
+
+### Target Audience
+This guide assumes a medium to senior level of knowledge working as DevOps, who is being introduced to Kubernetes, it is out of the scope here to explain or present basic commands, tools or pre-knowledge required.
+We will simulate a scenario where a company is migrating to Kubernetes architecture, and the DevOps team needs to become specialized and self-sufficient to deploy the environment, secure it and support, maintaining it consistently.
+
+## Prologue
+
+### TDOO
+- Add a prologue to explain the purpose of the guide, mention thanks to contributors, and provide a brief overview of the project.
+
+## Tools and Third-Party Software
+
+### All dependencies can only be used if they are Fully Open-Source and Free Commercial
+
+## Prerequisites
+
+### Not included in this guide, for hardware configuration refer to Kubernetes official documentation
+- 3 VPS instances with Ubuntu 24.04, fully upgraded and ready
+  - The specific cloud provider is not relevant to this guide
+  - Only hardware configuration (CPU, RAM, Storage), Hostnames (for node names), and VPN IPs are relevant
+- VPN will be configured using WireGuard with network 172.16.0.0/16
+  - Control plane: 172.16.0.1
+  - Worker node 1: 172.16.0.2
+  - Worker node 2: 172.16.0.3
+  - All inter-node communication must occur through the VPN
+- Docker CE installed and operational
+  - Kubernetes will be configured to use Docker's container service
+  - Docker daemon file needs configuration to work properly with Kubernetes
+  - Ability to run Docker containers in parallel with Kubernetes
+
+## Table of Contents
+
+### Chapter 1: Introduction and Architecture Overview
+- Kubernetes architecture basics
+- Multi-cloud deployment benefits and challenges
+- Secure communication with WireGuard VPN
+- Overall project architecture diagram
+
+### Chapter 2: Environment Preparation and Verification
+- Hardware requirements verification
+- Docker configuration for Kubernetes compatibility
+- WireGuard VPN confirmation and testing
+- Network connectivity verification
+
+### Chapter 3: Kubernetes Installation and Basic Configuration
+- Installing Kubernetes components (kubelet, kubeadm, kubectl)
+- Initializing the control plane
+- Setting up kubectl configuration
+- Joining worker nodes to the cluster
+- Management Solutions
+  - Kubernetes Dashboard (native console)
+    - Introduction
+    - Installation and configuration
+    - Accessing the dashboard securely
+  - KubeSphere as the primary management solution
+    - Introduction
+    - Features and benefits
+    - Add-ons and plugins
+    - Advanced features (e.g., DevOps pipelines, monitoring)
+    - Installation and configuration
+  - Other management alternatives (for future documentation, once validated)
+
+### Chapter 4: Networking with CNI Implementation
+- CNI overview and selection criteria
+- Installing and configuring Calico
+- Network policy setup and verification
+- Multi-cluster networking options
+
+### Chapter 5: Scheduling and Cron Jobs
+- Kubernetes scheduler concepts
+- Job and CronJob resources
+- Scheduling periodic and one-time tasks
+- Job management and monitoring
+- Advanced scheduling patterns and best practices
+- Job dependencies and workflow orchestration
+
+### Chapter 6: Storage Configuration
+- Storage concepts in Kubernetes
+- Persistent Volumes and Persistent Volume Claims
+- Storage Solutions
+  - Rook+Ceph as the primary storage solution
+  - OpenEBS as an alternative storage solution (for future documentation, once validated)
+  - Longhorn as an alternative storage solution (for future documentation, once validated)
+- StorageClass setup for dynamic provisioning
+- Data replication and high availability strategies
+- Cross-cloud storage solutions and challenges
+- Data backup and recovery strategies
+
+### Chapter 7: Advanced Cluster Configuration
+- Cluster security hardening
+- Resource management and limits
+- High availability considerations
+
+### Chapter 8: Service Deployment and Management
+- Deploying sample applications
+- Service types and exposure
+- Ingress controllers and configurations
+- Load balancing across workers
+
+### Chapter 9: Monitoring and Maintenance
+- Setting up monitoring tools
+- Log collection and analysis
+- Backup and recovery procedures
+- Cluster upgrades and patching strategies
+
+### Chapter 10: Troubleshooting and Optimization
+- Common issues and solutions
+- Performance optimization
+- Network debugging tools
+- Resource utilization analysis
+
+### Appendix
+- Repositories with extra content, configuration files and templates
+- Additional resources and further reading
+- Command references and cheat sheets
+- Glossary of terms and acronyms
+- Bibliographies and references
+- Acknowledgments and credits
+- Contact information for contributors and maintainers
+- License information and terms of use
+
+## 
