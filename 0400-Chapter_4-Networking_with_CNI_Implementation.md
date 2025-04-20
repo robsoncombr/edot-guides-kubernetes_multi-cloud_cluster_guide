@@ -54,6 +54,53 @@ kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs
 
 Create a custom Flannel configuration file:
 
+TODO: validate as process working
+curl -O https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml && cp kube-flannel.yml kube-flannel-custom.yml
+sed -i "s|10.244.0.0/16|10.10.0.0/16|g" kube-flannel-custom.yml
+cat > flannel-configmap-patch.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-flannel-cfg
+  namespace: kube-flannel
+data:
+  net-conf.json: |
+    {
+      "Network": "10.10.0.0/16",
+      "Backend": {
+        "Type": "vxlan",
+        "MTU": 1400,
+        "DirectRouting": true
+      }
+    }
+  cni-conf.json: |
+    {
+      "name": "cbr0",
+      "cniVersion": "0.3.1",
+      "plugins": [
+        {
+          "type": "flannel",
+          "delegate": {
+            "hairpinMode": true,
+            "isDefaultGateway": true
+          }
+        },
+        {
+          "type": "portmap",
+          "capabilities": {
+            "portMappings": true
+          }
+        }
+      ]
+    }
+EOF
+sed -i '/kind: DaemonSet/,/---/s/            - --iface=eth0/            - --iface-regex=enp0s6|eth0/' kube-flannel-custom.yml && kubectl apply -f kube-flannel-custom.yml
+
+TODO: for commands documentation
+kubectl get pods -n kube-flannel
+kubectl get nodes -o wide
+kubectl describe node k8s-02-oci-02 | grep -A10 Conditions:
+
 ```bash
 # Create custom Flannel configuration
 cat > kube-flannel.yaml << 'EOF'
@@ -325,6 +372,104 @@ Once all pods are running, verify the node status:
 ```bash
 # Verify nodes are in Ready state
 kubectl get nodes
+```
+
+### 4.2.5 Using VPN IPs for SSH Connections
+
+When working with a multi-cloud cluster connected via VPN, you should always use the VPN IP addresses instead of hostnames for SSH connections. This ensures reliable connectivity regardless of DNS configuration or hostname resolution issues.
+
+Use this format for SSH connections to nodes:
+
+```bash
+# SSH to control plane node
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@172.16.0.1
+
+# SSH to worker node 1
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@172.16.0.2
+
+# SSH to worker node 2
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@172.16.0.3
+```
+
+For scripting, you can use variables to make your scripts more flexible:
+
+```bash
+# Define node VPN IPs
+CONTROL_PLANE_IP="172.16.0.1"
+WORKER1_IP="172.16.0.2"  
+WORKER2_IP="172.16.0.3"
+
+# Example: Executing a command on worker node 1
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@${WORKER1_IP} "kubectl get nodes"
+```
+
+### 4.2.6 Helper Script for Node Access
+
+Create a helper script to simplify connections to your nodes:
+
+```bash
+cat > node-connect.sh << 'EOF'
+#!/bin/bash
+
+# Node IP mapping
+declare -A NODE_IPS
+NODE_IPS["k8s-01-oci-01"]="172.16.0.1"
+NODE_IPS["k8s-02-oci-02"]="172.16.0.2"
+NODE_IPS["k8s-03-htg-01"]="172.16.0.3"
+
+# Check if node name or IP is provided
+if [[ -z "$1" ]]; then
+  echo "Usage: $0 <node-name or node-number>"
+  echo "Examples:"
+  echo "  $0 k8s-01-oci-01"
+  echo "  $0 1 (for first node)"
+  echo "  $0 2 (for second node)"
+  echo "  $0 3 (for third node)"
+  exit 1
+fi
+
+NODE="$1"
+
+# If a number is provided, convert to node name
+if [[ "$NODE" =~ ^[0-9]+$ ]]; then
+  case "$NODE" in
+    1) NODE="k8s-01-oci-01" ;;
+    2) NODE="k8s-02-oci-02" ;;
+    3) NODE="k8s-03-htg-01" ;;
+    *) echo "Invalid node number: $NODE"; exit 1 ;;
+  esac
+fi
+
+# Get IP for the requested node
+IP="${NODE_IPS[$NODE]}"
+
+if [[ -z "$IP" ]]; then
+  # Check if input is already an IP
+  if [[ "$NODE" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    IP="$NODE"
+  else
+    echo "Unknown node: $NODE"
+    exit 1
+  fi
+fi
+
+echo "Connecting to node $NODE ($IP)..."
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@$IP
+EOF
+
+chmod +x node-connect.sh
+```
+
+Usage examples:
+```bash
+# Connect to control plane by name
+./node-connect.sh k8s-01-oci-01
+
+# Connect to worker 1 by node number
+./node-connect.sh 2
+
+# Connect directly by IP
+./node-connect.sh 172.16.0.3
 ```
 
 ## 4.3 Joining Worker Nodes with Specific CIDRs

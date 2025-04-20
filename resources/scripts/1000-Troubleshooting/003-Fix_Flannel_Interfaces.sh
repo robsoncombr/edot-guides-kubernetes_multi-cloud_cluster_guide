@@ -1,20 +1,19 @@
 #!/bin/bash
-
 # ============================================================================
-# 001-CNI_Setup.sh - Script to set up Flannel CNI
+# 003-Fix_Flannel_Interfaces.sh - Fix Flannel network interfaces
 # ============================================================================
 # 
 # DESCRIPTION:
-#   This script installs and configures Flannel as the CNI network plugin.
-#   It configures Flannel to use node-specific network interfaces based on
-#   the centralized environment configuration.
+#   This script fixes Flannel network interface configurations by creating
+#   appropriate DaemonSets for each interface type defined in the environment
+#   configuration.
 #
 # USAGE:
-#   ./001-CNI_Setup.sh
+#   ./003-Fix_Flannel_Interfaces.sh
 #
 # NOTES:
-#   - Run this script on the control plane node after initialization
-#   - Must be run before joining worker nodes
+#   - Run this script from the control plane node
+#   - Useful for fixing Flannel when nodes have different network interfaces
 # ============================================================================
 
 # Source the environment configuration
@@ -29,7 +28,7 @@ fi
 source "$ENV_CONFIG_PATH"
 
 echo "======================================================================"
-echo "Setting up Flannel CNI with node-specific network configurations"
+echo "Fixing Flannel Network Interface Configurations"
 echo "======================================================================"
 
 # Ensure running as root
@@ -48,22 +47,18 @@ if [[ "$HOSTNAME" != "$CONTROL_PLANE_HOSTNAME" ]]; then
     exit 1
 fi
 
-# Create a directory for the manifests
-MANIFEST_DIR="/tmp/flannel-manifests"
-mkdir -p $MANIFEST_DIR
+# Create a temporary directory for manifest files
+TMP_DIR="/tmp/flannel-fix"
+mkdir -p $TMP_DIR
 
-# Download the Flannel base manifest
-echo "Downloading Flannel base manifest..."
-curl -s https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml > $MANIFEST_DIR/kube-flannel-base.yml
+# Delete any existing Flannel DaemonSets
+echo "Removing existing Flannel DaemonSets..."
+kubectl -n kube-flannel get daemonset -o name | xargs -r kubectl -n kube-flannel delete
 
-# Modify the network configuration in the Flannel ConfigMap
-echo "Modifying Flannel ConfigMap to use our Pod CIDR: $POD_CIDR"
-sed -i "s|\"Network\": \"10.244.0.0/16\"|\"Network\": \"$POD_CIDR\"|g" $MANIFEST_DIR/kube-flannel-base.yml
+# Keep any existing ConfigMap
+echo "Keeping existing Flannel ConfigMap for reuse..."
 
-# Disable Flannel default DaemonSet - we'll create our own node-specific DaemonSets
-sed -i '/^---/,$d' $MANIFEST_DIR/kube-flannel-base.yml
-
-# Create a Flannel manifest for each unique network interface
+# Find unique network interfaces across all nodes
 declare -A INTERFACES
 
 # Extract unique interfaces from node configurations
@@ -78,10 +73,6 @@ for IFACE in "${!INTERFACES[@]}"; do
     echo "- $IFACE"
 done
 
-# Create the Flannel namespace and apply the ConfigMap first
-echo "Creating Flannel namespace and ConfigMap..."
-kubectl apply -f $MANIFEST_DIR/kube-flannel-base.yml
-
 # Create a Flannel DaemonSet for each interface
 for IFACE in "${!INTERFACES[@]}"; do
     echo "Creating Flannel DaemonSet for interface: $IFACE"
@@ -92,15 +83,12 @@ for IFACE in "${!INTERFACES[@]}"; do
         NODE_NAME=$(get_node_property "$NODE_CONFIG" 0)
         NODE_INTERFACE=$(get_node_property "$NODE_CONFIG" 3)
         if [[ "$NODE_INTERFACE" == "$IFACE" ]]; then
-            NODE_SELECTORS+=("kubernetes.io/hostname: $NODE_NAME")
+            NODE_SELECTORS+=("$NODE_NAME")
         fi
     done
     
-    # Join the node selectors with commas for the nodeAffinity
-    NODE_AFFINITY_SELECTORS=$(IFS=,; echo "${NODE_SELECTORS[*]}")
-    
-    # Generate the Flannel DaemonSet manifest for this interface
-    cat > $MANIFEST_DIR/kube-flannel-ds-$IFACE.yml << EOF
+    # Create the Flannel DaemonSet manifest
+    cat > $TMP_DIR/kube-flannel-ds-$IFACE.yaml << EOF
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -138,10 +126,15 @@ spec:
               - key: kubernetes.io/hostname
                 operator: In
                 values:
-                $(for SELECTOR in "${NODE_SELECTORS[@]}"; do 
-                  NODE_NAME=$(echo $SELECTOR | cut -d: -f2 | tr -d ' ')
-                  echo "                - $NODE_NAME"
-                done)
+EOF
+
+    # Add the node selectors to the manifest
+    for NODE_NAME in "${NODE_SELECTORS[@]}"; do
+        echo "                - $NODE_NAME" >> $TMP_DIR/kube-flannel-ds-$IFACE.yaml
+    done
+
+    # Complete the manifest
+    cat >> $TMP_DIR/kube-flannel-ds-$IFACE.yaml << EOF
       hostNetwork: true
       priorityClassName: system-node-critical
       tolerations:
@@ -229,76 +222,27 @@ spec:
           path: /run/xtables.lock
           type: FileOrCreate
 EOF
-    
-    # Apply the Flannel DaemonSet for this interface
-    kubectl apply -f $MANIFEST_DIR/kube-flannel-ds-$IFACE.yml
+
+    # Apply the Flannel DaemonSet
+    echo "Applying Flannel DaemonSet for interface $IFACE..."
+    kubectl apply -f $TMP_DIR/kube-flannel-ds-$IFACE.yaml
 done
 
-# Wait for Flannel pods to be running
-echo "Waiting for Flannel pods to start (this may take a minute)..."
-sleep 10
+# Wait for Flannel pods to be created
+echo "Waiting for Flannel pods to start (30 seconds)..."
+sleep 30
 
-# Check the status of Flannel pods
+# Check status of Flannel pods
 echo "Checking Flannel pod status:"
 kubectl -n kube-flannel get pods -o wide
 
-# Check if control plane node has correct CIDR
-CP_HOSTNAME=$(get_node_property "${NODE_CP1}" 0)
-CP_POD_CIDR=$(get_node_property "${NODE_CP1}" 2)
-CURRENT_CIDR=$(kubectl get node "$CP_HOSTNAME" -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+# Clean up temporary files
+rm -rf $TMP_DIR
 
-if [ -z "$CURRENT_CIDR" ]; then
-    echo "Patching control plane node with specific CIDR range: $CP_POD_CIDR"
-    kubectl patch node "$CP_HOSTNAME" -p "{\"spec\":{\"podCIDR\":\"$CP_POD_CIDR\",\"podCIDRs\":[\"$CP_POD_CIDR\"]}}"
-elif [ "$CURRENT_CIDR" != "$CP_POD_CIDR" ]; then
-    echo "Warning: Control plane node has CIDR $CURRENT_CIDR instead of $CP_POD_CIDR"
-    echo "The pod CIDR mismatch will be handled by Flannel subnet configuration"
-else
-    echo "Control plane node already has the correct CIDR: $CP_POD_CIDR"
-fi
-
-# Configure Flannel subnet on the control plane
-CP_INTERFACE=$(get_node_property "${NODE_CP1}" 3)
-echo "Configuring Flannel subnet on control plane with interface $CP_INTERFACE..."
-
-# Set up Flannel subnet configuration on the control plane
-mkdir -p /run/flannel
-cat > /run/flannel/subnet.env << EOF
-FLANNEL_NETWORK=$POD_CIDR
-FLANNEL_SUBNET=$CP_POD_CIDR
-FLANNEL_MTU=1450
-FLANNEL_IPMASQ=true
-EOF
-
-# Display status message
-echo "======================================================================"
-echo "Flannel CNI installed with node-specific interface configurations:"
-for IFACE in "${!INTERFACES[@]}"; do
-    echo "- Interface: $IFACE"
-    echo "  Used by nodes:"
-    for NODE_CONFIG in "${ALL_NODES[@]}"; do
-        NODE_NAME=$(get_node_property "$NODE_CONFIG" 0)
-        NODE_INTERFACE=$(get_node_property "$NODE_CONFIG" 3)
-        if [[ "$NODE_INTERFACE" == "$IFACE" ]]; then
-            NODE_POD_CIDR=$(get_node_property "$NODE_CONFIG" 2)
-            echo "  - $NODE_NAME (CIDR: $NODE_POD_CIDR)"
-        fi
-    done
-done
-echo ""
-echo "Flannel CNI configuration completed successfully!"
-echo "Your network configuration summary:"
-echo "- Pod CIDR: $POD_CIDR"
-echo "- Service CIDR: $SERVICE_CIDR"
-echo "- DNS Service IP: $DNS_SERVICE_IP"
-echo ""
+echo "-------------------------------------------------------------------"
 echo "Checking node status:"
 kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[0].address,POD-CIDR:.spec.podCIDR,STATUS:.status.conditions[-1].type
-echo ""
-echo "IMPORTANT: Control plane node should now be in 'Ready' state."
-echo "You can now join worker nodes to the cluster using the script:"
-echo "  ./004-Join_Worker_Nodes.sh"
-echo "======================================================================"
 
-# Clean up
-rm -rf $MANIFEST_DIR
+echo "======================================================================"
+echo "Flannel network interface fix completed!"
+echo "======================================================================"

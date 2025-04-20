@@ -1,28 +1,50 @@
 #!/bin/bash
 
+# Source the environment configuration
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+ENV_CONFIG_PATH="$(realpath "$SCRIPT_DIR/../0100-Chapter_1/001-Environment_Config.sh")"
+
+if [ ! -f "$ENV_CONFIG_PATH" ]; then
+    echo "Error: Environment configuration file not found at $ENV_CONFIG_PATH"
+    exit 1
+fi
+
+source "$ENV_CONFIG_PATH"
+
+# Get current node properties
+CURRENT_HOSTNAME=$(get_current_hostname)
+NODE_IP=$(get_current_node_property "vpn_ip")
+NODE_INTERFACE=$(get_current_node_property "interface")
+NODE_POD_CIDR=$(get_current_node_property "pod_cidr")
+
+echo "Initializing control plane node: $CURRENT_HOSTNAME"
+echo "Node IP: $NODE_IP"
+echo "Network Interface: $NODE_INTERFACE"
+echo "Pod CIDR: $NODE_POD_CIDR"
+
 # Create kubeadm configuration file
 cat > /tmp/kubeadm-config.yaml << EOF
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
 nodeRegistration:
-  name: k8s-01-oci-01
+  name: $CURRENT_HOSTNAME
   kubeletExtraArgs:
-    node-ip: "172.16.0.1"
+    node-ip: "$NODE_IP"
 ---
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
-kubernetesVersion: v1.32.3
+kubernetesVersion: $K8S_VERSION
 networking:
-  serviceSubnet: "10.1.0.0/16"
-  podSubnet: "10.10.0.0/16"
-controlPlaneEndpoint: "172.16.0.1:6443"
+  serviceSubnet: "$SERVICE_CIDR"
+  podSubnet: "$POD_CIDR"
+controlPlaneEndpoint: "$CONTROL_PLANE_ENDPOINT"
 apiServer:
   certSANs:
-  - "172.16.0.1"
+  - "$NODE_IP"
 controllerManager:
   extraArgs:
     # Configure the controller manager to use specific CIDR ranges
-    cluster-cidr: "10.10.0.0/16"
+    cluster-cidr: "$POD_CIDR"
     node-cidr-mask-size: "24"
     allocate-node-cidrs: "true"
 ---
@@ -43,7 +65,7 @@ chown $(id -u):$(id -g) $HOME/.kube/config
 
 # Patch the control plane node to use the correct CIDR range
 echo "Patching control plane node with specific CIDR range..."
-kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}' || \
+kubectl patch node $CURRENT_HOSTNAME -p "{\"spec\":{\"podCIDR\":\"$NODE_POD_CIDR\",\"podCIDRs\":[\"$NODE_POD_CIDR\"]}}" || \
   echo "Note: Could not patch the node CIDR immediately. This will be handled in the CNI setup script."
 
 # Display kubeconfig setup message

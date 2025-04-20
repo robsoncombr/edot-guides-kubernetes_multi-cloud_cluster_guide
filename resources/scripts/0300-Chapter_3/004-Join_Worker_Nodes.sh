@@ -5,38 +5,34 @@
 # ============================================================================
 # 
 # DESCRIPTION:
-#   This script joins a worker node to an existing Kubernetes cluster and 
+#   This script joins worker nodes to an existing Kubernetes cluster and 
 #   automatically configures the Flannel CNI network settings with the 
 #   appropriate pod CIDR. It also automatically patches the node on the control
 #   plane with the correct pod CIDR allocation.
 #
 # USAGE:
-#   ./004-Join_Worker_Nodes.sh 'kubeadm join ... --token ... --discovery-token-ca-cert-hash ...'
+#   ./004-Join_Worker_Nodes.sh 
 #
 # ARGUMENTS:
-#   $1 - The 'kubeadm join' command to use for joining the cluster
+#   None - The script automatically retrieves the join command from the control plane
 #
 # ORDER OF USE:
 #   1. Run Chapter 3 master node initialization script first
 #   2. Run CNI setup script on control plane (001-CNI_Setup.sh)
-#   3. Run this script on each worker node with the join command
+#   3. Run this script on the control plane to join all worker nodes
 #   4. Verify with 'kubectl get nodes' on control plane after joining
-#
-# CIDR ALLOCATIONS:
-#   - Service CIDR: 10.1.0.0/16 (defined during kubeadm init)
-#   - Pod CIDR: 10.10.0.0/16 (used by Flannel)
-#   - Node-specific pod CIDRs:
-#     - Node 01 (k8s-01-oci-01): 10.10.1.0/24
-#     - Node 02 (k8s-02-oci-02): 10.10.2.0/24
-#     - Node 03 (k8s-03-htg-01): 10.10.3.0/24
-#
-# NOTES:
-#   - The script automatically handles both local Flannel subnet configuration
-#     and remote CIDR patching on the control plane
-#   - Node numbers are extracted from hostnames to determine proper CIDR
-#   - Requires root privileges to run
-#   - Requires password-less SSH access to the control plane (172.16.0.1)
 # ============================================================================
+
+# Source the environment configuration
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+ENV_CONFIG_PATH="$(realpath "$SCRIPT_DIR/../0100-Chapter_1/001-Environment_Config.sh")"
+
+if [ ! -f "$ENV_CONFIG_PATH" ]; then
+    echo "Error: Environment configuration file not found at $ENV_CONFIG_PATH"
+    exit 1
+fi
+
+source "$ENV_CONFIG_PATH"
 
 echo "======================================================================"
 echo "Joining Worker Nodes to Kubernetes Cluster"
@@ -48,147 +44,166 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Check if join command is provided
-if [ -z "$1" ]; then
-    echo "Error: No join command provided."
-    echo "Usage: $0 'kubeadm join ... --token ... --discovery-token-ca-cert-hash ...'"
+# Check if running on control plane node
+HOSTNAME=$(get_current_hostname)
+CONTROL_PLANE_HOSTNAME=$(get_node_property "${NODE_CP1}" 0)
+
+if [[ "$HOSTNAME" != "$CONTROL_PLANE_HOSTNAME" ]]; then
+    echo "Error: This script must be run on the control plane node ($CONTROL_PLANE_HOSTNAME)"
+    echo "Current host: $HOSTNAME"
     exit 1
 fi
 
-JOIN_COMMAND="$1"
+# Get the kubeadm join command correctly for worker nodes
+echo "Generating fresh worker node join token..."
+JOIN_CMD=$(kubeadm token create --print-join-command)
 
-echo "Joining this node to the Kubernetes cluster..."
-echo "Using command: $JOIN_COMMAND"
-
-# Execute the join command
-$JOIN_COMMAND
-
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to join the cluster. Check the join command and try again."
+# Exit if we couldn't get a join command
+if [ -z "$JOIN_CMD" ]; then
+    echo "Error: Could not generate a valid join command"
     exit 1
 fi
 
-echo "Node joined successfully!"
+echo "Join command: $JOIN_CMD"
 
-# Get the node name that just joined
-NODE_NAME=$(hostname)
-
-# Extract the node number from hostname using improved pattern matching
-if [[ $NODE_NAME =~ k8s-([0-9]+)[-] ]]; then
-    NODE_NUM=${BASH_REMATCH[1]}
-    # Remove any leading zeros
-    NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
-else
-    # Fallback for alternative hostname formats
-    NODE_NUM=${NODE_NAME##*-}
-    # Remove any leading zeros
-    NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
-fi
-
-# Safety check to ensure we have a valid node number
-if [[ ! $NODE_NUM =~ ^[0-9]+$ ]]; then
-    echo "Error: Could not extract valid node number from hostname."
-    echo "Please ensure hostname follows the expected format (k8s-XX-*)"
-    exit 1
-fi
-
-# Define the pod CIDR based on node number
-POD_CIDR="10.10.${NODE_NUM}.0/24"
-
-# Path to the Flannel fix script from Chapter 4
-FLANNEL_FIX_SCRIPT="$(dirname "$0")/../0400-Chapter_4/001_fix-Flannel_Subnet.sh"
-
-# Apply Flannel subnet fix
-echo "Applying Flannel subnet configuration fix..."
-if [ -f "$FLANNEL_FIX_SCRIPT" ]; then
-    # Execute the fix script
-    echo "Using the centralized Flannel fix script..."
-    bash "$FLANNEL_FIX_SCRIPT"
-else
-    echo "Error: Flannel fix script not found at $FLANNEL_FIX_SCRIPT"
-    echo "Cannot configure Flannel networking properly. Please ensure the fix script exists."
-    exit 1
-fi
-
-# Create a script to run on the control plane to patch this node
-echo "Creating CIDR patching script for control plane..."
-cat > /tmp/patch_node_cidr.sh << EOF
+# Create node join and setup script template
+echo "Creating node join and network setup script template..."
+cat > /tmp/join_template.sh << 'EOF'
 #!/bin/bash
-# Wait for node to appear in the cluster
-ATTEMPTS=0
-MAX_ATTEMPTS=30
-while [ \$ATTEMPTS -lt \$MAX_ATTEMPTS ]; do
-    if kubectl get node $NODE_NAME &>/dev/null; then
-        break
-    fi
-    echo "Waiting for node $NODE_NAME to appear in the cluster..."
-    sleep 5
-    ATTEMPTS=\$((ATTEMPTS+1))
-done
+set -e
 
-if [ \$ATTEMPTS -eq \$MAX_ATTEMPTS ]; then
-    echo "Error: Node $NODE_NAME did not appear in the cluster after waiting"
-    exit 1
-fi
-
-# Check current CIDR before patching
-CURRENT_CIDR=\$(kubectl get node $NODE_NAME -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
-if [ -z "\$CURRENT_CIDR" ]; then
-    echo "Patching node $NODE_NAME with CIDR $POD_CIDR"
-    kubectl patch node $NODE_NAME -p '{"spec":{"podCIDR":"$POD_CIDR","podCIDRs":["$POD_CIDR"]}}'
-    echo "Node $NODE_NAME patched successfully with CIDR $POD_CIDR"
-else
-    echo "Node $NODE_NAME already has CIDR \$CURRENT_CIDR, skipping patch"
-fi
-EOF
-
-# Try to send the script to the control plane and execute it
-echo "Attempting to send and execute CIDR patching script on control plane..."
-if scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 /tmp/patch_node_cidr.sh root@172.16.0.1:/tmp/ >/dev/null 2>&1; then
-    if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@172.16.0.1 "bash /tmp/patch_node_cidr.sh && rm -f /tmp/patch_node_cidr.sh"; then
-        echo "CIDR patching completed successfully on control plane"
-    else
-        echo "Warning: SSH connection succeeded but CIDR patching on control plane failed"
-        MANUAL_PATCH=true
-    fi
-else
-    echo "Warning: Could not connect to control plane via SSH to apply CIDR patch"
-    MANUAL_PATCH=true
-fi
-
-# If SSH fails, provide clear manual instructions
-if [ "$MANUAL_PATCH" = true ]; then
-    echo ""
-    echo "===================================================================="
-    echo "IMPORTANT: Manual Action Required on Control Plane Node"
-    echo "===================================================================="
-    echo "Please run the following commands on the control plane node (k8s-01-oci-01):"
-    echo ""
-    echo "# Wait for node to appear (might take a few seconds)"
-    echo "kubectl get nodes | grep $NODE_NAME"
-    echo ""
-    echo "# Apply the correct Pod CIDR"
-    echo "kubectl patch node $NODE_NAME -p '{\"spec\":{\"podCIDR\":\"$POD_CIDR\",\"podCIDRs\":[\"$POD_CIDR\"]}}'"
-    echo ""
-    echo "# Verify the CIDR was assigned correctly"
-    echo "kubectl get node $NODE_NAME -o custom-columns=NAME:.metadata.name,POD-CIDR:.spec.podCIDR"
-    echo "===================================================================="
-fi
-
-rm -f /tmp/patch_node_cidr.sh
+# Environment variables will be replaced dynamically
+NODE_NAME="__NODE_NAME__"
+NODE_IP="__NODE_IP__"
+NODE_POD_CIDR="__NODE_POD_CIDR__"
+NODE_INTERFACE="__NODE_INTERFACE__"
+JOIN_CMD="__JOIN_CMD__"
 
 echo "======================================================================"
-echo "Worker node joined and network configured successfully!"
-echo "Pod CIDR: $POD_CIDR"
-echo "Local Flannel subnet configured"
-if [ "$MANUAL_PATCH" != true ]; then
-    echo "Control plane node patching completed"
-else
-    echo "Control plane node patching requires manual steps (see above)"
+echo "Joining worker node ${NODE_NAME} to Kubernetes cluster"
+echo "======================================================================"
+
+# Configure kubelet to use the correct node IP
+echo "Setting kubelet node IP configuration..."
+mkdir -p /etc/default
+cat > /etc/default/kubelet << EOL
+KUBELET_EXTRA_ARGS="--node-ip=${NODE_IP} --cluster-dns=__DNS_SERVICE_IP__"
+EOL
+
+# Set up proper Flannel subnet configuration BEFORE joining
+echo "Configuring Flannel subnet for ${NODE_NAME} with CIDR ${NODE_POD_CIDR}..."
+mkdir -p /run/flannel
+cat > /run/flannel/subnet.env << EOL
+FLANNEL_NETWORK=__POD_CIDR__
+FLANNEL_SUBNET=${NODE_POD_CIDR}
+FLANNEL_MTU=1450
+FLANNEL_IPMASQ=true
+EOL
+
+# Execute join command
+echo "Executing join command: ${JOIN_CMD}"
+${JOIN_CMD}
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to join the cluster. Please check the join command and try again."
+    exit 1
 fi
-echo ""
-echo "To verify the configuration, run on the control plane:"
-echo "  kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[0].address,POD-CIDR:.spec.podCIDR"
+
+# Restart kubelet to ensure all configurations are applied
+echo "Restarting kubelet service..."
+systemctl restart kubelet
+
+echo "======================================================================"
+echo "Worker node ${NODE_NAME} joined and network configured successfully!"
+echo "Node IP: ${NODE_IP}"
+echo "Pod CIDR: ${NODE_POD_CIDR}"
+echo "Network Interface: ${NODE_INTERFACE}"
 echo ""
 echo "Note: It may take a minute for the node to become Ready"
+echo "======================================================================"
+EOF
+
+# Process each worker node
+for NODE_CONFIG in "${NODE_W1}" "${NODE_W2}"; do
+    NODE_NAME=$(get_node_property "$NODE_CONFIG" 0)
+    NODE_IP=$(get_node_property "$NODE_CONFIG" 1)
+    NODE_POD_CIDR=$(get_node_property "$NODE_CONFIG" 2)
+    NODE_INTERFACE=$(get_node_property "$NODE_CONFIG" 3)
+    
+    echo "Preparing to join worker node: $NODE_NAME"
+    echo "Node IP: $NODE_IP"
+    echo "Pod CIDR: $NODE_POD_CIDR"
+    echo "Network Interface: $NODE_INTERFACE"
+    
+    # Create a customized join script for this node
+    JOIN_SCRIPT="/tmp/join_${NODE_NAME}.sh"
+    cp /tmp/join_template.sh "$JOIN_SCRIPT"
+    
+    # Replace placeholder values with actual values
+    sed -i "s|__NODE_NAME__|${NODE_NAME}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_IP__|${NODE_IP}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_POD_CIDR__|${NODE_POD_CIDR}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_INTERFACE__|${NODE_INTERFACE}|g" "$JOIN_SCRIPT"
+    sed -i "s|__JOIN_CMD__|${JOIN_CMD}|g" "$JOIN_SCRIPT"
+    sed -i "s|__POD_CIDR__|${POD_CIDR}|g" "$JOIN_SCRIPT"
+    sed -i "s|__DNS_SERVICE_IP__|${DNS_SERVICE_IP}|g" "$JOIN_SCRIPT"
+    
+    chmod +x "$JOIN_SCRIPT"
+    
+    # Copy and execute the join script on the worker node
+    echo "Copying and executing join script on ${NODE_NAME} (${NODE_IP})..."
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$JOIN_SCRIPT" "root@${NODE_IP}:/tmp/"; then
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@${NODE_IP}" "bash /tmp/join_${NODE_NAME}.sh && rm -f /tmp/join_${NODE_NAME}.sh"; then
+            echo "Worker node ${NODE_NAME} joined successfully"
+            
+            # Wait for the node to appear in the cluster
+            echo "Waiting for node ${NODE_NAME} to appear in the cluster..."
+            ATTEMPTS=0
+            MAX_ATTEMPTS=30
+            while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+                if kubectl get node "${NODE_NAME}" &>/dev/null; then
+                    echo "Node ${NODE_NAME} detected in the cluster."
+                    break
+                fi
+                echo "Waiting for node ${NODE_NAME}... (${ATTEMPTS}/${MAX_ATTEMPTS})"
+                sleep 5
+                ATTEMPTS=$((ATTEMPTS+1))
+            done
+            
+            if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
+                echo "Warning: Node ${NODE_NAME} did not appear in the cluster after waiting"
+            else
+                # Patch the node with the correct CIDR if needed
+                echo "Checking and patching CIDR for node ${NODE_NAME}..."
+                CURRENT_CIDR=$(kubectl get node "${NODE_NAME}" -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+                if [ -z "$CURRENT_CIDR" ]; then
+                    echo "Patching node ${NODE_NAME} with CIDR ${NODE_POD_CIDR}"
+                    kubectl patch node "${NODE_NAME}" -p "{\"spec\":{\"podCIDR\":\"${NODE_POD_CIDR}\",\"podCIDRs\":[\"${NODE_POD_CIDR}\"]}}" || \
+                        echo "Warning: Could not patch node CIDR. Check manually."
+                elif [ "$CURRENT_CIDR" != "$NODE_POD_CIDR" ]; then
+                    echo "Warning: Node ${NODE_NAME} has CIDR ${CURRENT_CIDR} instead of ${NODE_POD_CIDR}"
+                    echo "The pod CIDR mismatch will be handled by Flannel subnet configuration"
+                else
+                    echo "Node ${NODE_NAME} already has the correct CIDR: ${NODE_POD_CIDR}"
+                fi
+            fi
+        else
+            echo "Error: Failed to execute join script on ${NODE_NAME}"
+        fi
+    else
+        echo "Error: Failed to copy join script to ${NODE_NAME}"
+    fi
+done
+
+# Clean up temporary files
+rm -f /tmp/join_template.sh
+rm -f /tmp/join_k8s-*.sh
+
+echo "======================================================================"
+echo "Worker node join process completed!"
+echo ""
+echo "Verifying node status and CIDR assignments:"
+kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[0].address,POD-CIDR:.spec.podCIDR,STATUS:.status.conditions[-1].type
+echo ""
+echo "Note: It may take a few minutes for all nodes to become Ready"
 echo "======================================================================"
