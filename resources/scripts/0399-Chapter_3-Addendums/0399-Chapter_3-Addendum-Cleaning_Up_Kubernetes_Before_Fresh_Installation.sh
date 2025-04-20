@@ -360,27 +360,29 @@ if ! bash /tmp/node_cleanup.sh $REMOVE_PACKAGES_ARG 2>&1 | grep -v "runtime conn
 fi
 
 # Ask about rebooting nodes
-echo -n "Do you want to reboot all nodes now? (Recommended) (y/N): "
-read -r reboot_nodes
+# echo -n "Do you want to reboot all nodes now? (Recommended) (y/N): "
+# read -r reboot_nodes
+# 
+# if [[ "$reboot_nodes" = "y" || "$reboot_nodes" = "Y" ]]; then
+#     # Reboot worker nodes first
+#     for NODE in "${WORKER_NODES[@]}"; do
+#         print_status "Rebooting worker node: $NODE"
+#         if ! ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "reboot" &>/dev/null; then
+#             print_warning "Failed to reboot worker node $NODE"
+#             WARNINGS+=("Failed to reboot node $NODE - Please reboot manually")
+#         fi
+#     done
+#     
+#     # Finally reboot the control plane node
+#     print_status "All worker nodes have been instructed to reboot."
+#     print_status "Rebooting control plane node in 5 seconds..."
+#     sleep 5
+#     reboot
+# else
+#     print_status "Cleanup completed. Please reboot all nodes manually when convenient."
+# fi
 
-if [[ "$reboot_nodes" = "y" || "$reboot_nodes" = "Y" ]]; then
-    # Reboot worker nodes first
-    for NODE in "${WORKER_NODES[@]}"; do
-        print_status "Rebooting worker node: $NODE"
-        if ! ssh -o StrictHostKeyChecking=no ${SSH_USER}@${NODE} "reboot" &>/dev/null; then
-            print_warning "Failed to reboot worker node $NODE"
-            WARNINGS+=("Failed to reboot node $NODE - Please reboot manually")
-        fi
-    done
-    
-    # Finally reboot the control plane node
-    print_status "All worker nodes have been instructed to reboot."
-    print_status "Rebooting control plane node in 5 seconds..."
-    sleep 5
-    reboot
-else
-    print_status "Cleanup completed. Please reboot all nodes manually when convenient."
-fi
+print_status "Cleanup completed. Please reboot all nodes manually when convenient."
 
 # Print summary of warnings if any
 if [ ${#WARNINGS[@]} -gt 0 ]; then

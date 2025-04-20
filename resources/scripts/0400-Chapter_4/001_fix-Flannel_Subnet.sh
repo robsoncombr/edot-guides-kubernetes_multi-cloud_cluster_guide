@@ -22,10 +22,7 @@
 # CIDR ALLOCATIONS:
 #   - Service CIDR: 10.1.0.0/16 (defined during kubeadm init)
 #   - Pod CIDR: 10.10.0.0/16 (used by Flannel)
-#   - Node-specific pod CIDRs:
-#     - Node 01 (k8s-01-oci-01): 10.10.1.0/24
-#     - Node 02 (k8s-02-oci-02): 10.10.2.0/24
-#     - Node 03 (k8s-03-htg-01): 10.10.3.0/24
+#   - Node-specific pod CIDRs are defined in the environment configuration
 #
 # NOTES:
 #   - Requires root privileges to run
@@ -33,6 +30,17 @@
 #     node with the correct pod CIDR using kubectl
 #   - The hostname must follow the pattern that includes the node number
 # ============================================================================
+
+# Source the environment configuration
+SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+ENV_CONFIG_PATH="$(realpath "$SCRIPT_DIR/../0100-Chapter_1/001-Environment_Config.sh")"
+
+if [ ! -f "$ENV_CONFIG_PATH" ]; then
+    echo "Error: Environment configuration file not found at $ENV_CONFIG_PATH"
+    exit 1
+fi
+
+source "$ENV_CONFIG_PATH"
 
 # Set -e to exit on error
 set -e
@@ -47,23 +55,27 @@ echo "======================================================================="
 echo "Flannel Subnet Configuration Fix for Worker Nodes"
 echo "======================================================================="
 
-# Extract node number from hostname
-NODE_NAME=$(hostname)
-echo "Current hostname: $NODE_NAME"
+# Get current node properties
+CURRENT_HOSTNAME=$(get_current_hostname)
+NODE_POD_CIDR=$(get_current_node_property "pod_cidr")
+NODE_INTERFACE=$(get_current_node_property "interface")
 
-# Special case for the control plane node - assign 10.10.1.0/24
-if [[ "$NODE_NAME" == "k8s-01-oci-01" ]]; then
-  # Control plane gets 10.10.1.0/24 as configured in our requirements
-  POD_CIDR="10.10.1.0/24"
-else
-  # For worker nodes, extract the node number and use it for CIDR
-  if [[ $NODE_NAME =~ k8s-([0-9]+)[-] ]]; then
+echo "Current hostname: $CURRENT_HOSTNAME"
+echo "Using settings from environment configuration:"
+echo "- Pod CIDR: $NODE_POD_CIDR"
+echo "- Network Interface: $NODE_INTERFACE"
+
+# If we couldn't find the node in the configuration, fall back to extraction from hostname
+if [[ -z "$NODE_POD_CIDR" || -z "$NODE_INTERFACE" ]]; then
+  echo "Warning: Could not find node settings in environment configuration, using fallback method."
+  # Fallback: Extract node number from hostname
+  if [[ $CURRENT_HOSTNAME =~ k8s-([0-9]+)[-] ]]; then
     NODE_NUM=${BASH_REMATCH[1]}
     # Remove any leading zeros
     NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
   else
     # Fallback for alternative hostname formats
-    NODE_NUM=${NODE_NAME##*-}
+    NODE_NUM=${CURRENT_HOSTNAME##*-}
     # Remove any leading zeros
     NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
   fi
@@ -76,19 +88,28 @@ else
   fi
 
   # Configure the pod CIDR based on node number
-  POD_CIDR="10.10.${NODE_NUM}.0/24"
+  NODE_POD_CIDR="10.10.${NODE_NUM}.0/24"
+  
+  # Default to eth0 for unknown nodes
+  NODE_INTERFACE="eth0"
+  
+  echo "Fallback settings:"
+  echo "- Extracted Node Number: $NODE_NUM"
+  echo "- Pod CIDR: $NODE_POD_CIDR"
+  echo "- Network Interface: $NODE_INTERFACE"
 fi
 
-echo "Configuring flannel subnet for $NODE_NAME with CIDR $POD_CIDR"
+echo "Configuring flannel subnet for $CURRENT_HOSTNAME with CIDR $NODE_POD_CIDR via interface $NODE_INTERFACE"
 
 # Ensure CNI directory exists
 mkdir -p /run/flannel
 
 # Create subnet.env file with correct CIDR
-echo "FLANNEL_NETWORK=10.10.0.0/16" > /run/flannel/subnet.env
-echo "FLANNEL_SUBNET=$POD_CIDR" >> /run/flannel/subnet.env
+echo "FLANNEL_NETWORK=$POD_CIDR" > /run/flannel/subnet.env
+echo "FLANNEL_SUBNET=$NODE_POD_CIDR" >> /run/flannel/subnet.env
 echo "FLANNEL_MTU=1450" >> /run/flannel/subnet.env
 echo "FLANNEL_IPMASQ=true" >> /run/flannel/subnet.env
+echo "FLANNEL_IFACE=$NODE_INTERFACE" >> /run/flannel/subnet.env
 
 if [ "$NO_RESTART" = false ]; then
   echo "Subnet configured. Restarting kubelet..."
@@ -99,7 +120,8 @@ fi
 
 echo "======================================================================="
 echo "Flannel configuration complete!"
-echo "Pod CIDR: $POD_CIDR"
+echo "Pod CIDR: $NODE_POD_CIDR"
+echo "Network Interface: $NODE_INTERFACE"
 echo "Please verify network connectivity with:"
 echo "  kubectl get nodes -o wide"
 echo "======================================================================="

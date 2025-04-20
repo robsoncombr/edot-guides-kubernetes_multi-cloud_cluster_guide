@@ -1,5 +1,22 @@
 #!/bin/bash
 
+# ============================================================================
+# 003-Initialize_the_Control_Plane_Node.sh - Initialize Kubernetes control plane
+# ============================================================================
+# 
+# DESCRIPTION:
+#   This script initializes the Kubernetes control plane node with the specified
+#   configuration. It uses kubeadm to bootstrap the control plane and sets up
+#   the basic configuration needed for a multi-cloud cluster.
+#
+# USAGE:
+#   ./003-Initialize_the_Control_Plane_Node.sh
+#
+# NOTES:
+#   - This script should be run on the designated control plane node only
+#   - After running this script, set up CNI (Chapter 4) before joining worker nodes
+# ============================================================================
+
 # Source the environment configuration
 SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 ENV_CONFIG_PATH="$(realpath "$SCRIPT_DIR/../0100-Chapter_1/001-Environment_Config.sh")"
@@ -11,8 +28,89 @@ fi
 
 source "$ENV_CONFIG_PATH"
 
-# Get current node properties
+echo "======================================================================"
+echo "Pre-flight checks for Kubernetes control plane initialization"
+echo "======================================================================"
+
+# Check 1: Ensure running as root
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: This script must be run as root"
+    exit 1
+fi
+
+# Check 2: Verify this is the correct control plane node
 CURRENT_HOSTNAME=$(get_current_hostname)
+CONTROL_PLANE_HOSTNAME=$(get_node_property "${NODE_CP1}" 0)
+if [[ "$CURRENT_HOSTNAME" != "$CONTROL_PLANE_HOSTNAME" ]]; then
+    echo "Error: This script must be run on the control plane node ($CONTROL_PLANE_HOSTNAME)"
+    echo "Current host: $CURRENT_HOSTNAME"
+    exit 1
+fi
+
+# Check 3: Validate Pod CIDR format
+if [[ "$POD_CIDR" == *"X"* ]]; then
+    echo "Error: Invalid Pod CIDR found in environment config: $POD_CIDR"
+    echo "Please update the POD_CIDR in $ENV_CONFIG_PATH to use a valid CIDR notation"
+    echo "For example: POD_CIDR=\"10.10.0.0/16\""
+    exit 1
+fi
+
+# Check 4: Verify network interface exists
+NODE_INTERFACE=$(get_current_node_property "interface")
+if ! ip link show "$NODE_INTERFACE" &>/dev/null; then
+    echo "Error: Network interface $NODE_INTERFACE not found on this host"
+    echo "Available interfaces:"
+    ip -br link show
+    echo "Please update the interface value in $ENV_CONFIG_PATH"
+    exit 1
+fi
+
+# Check 5: Verify Docker/containerd is running
+if ! systemctl is-active --quiet containerd; then
+    echo "Error: containerd is not running"
+    echo "Please ensure containerd is installed and running:"
+    echo "  systemctl start containerd"
+    exit 1
+fi
+
+# Check 6: Verify kubeadm, kubelet, and kubectl are installed
+for cmd in kubeadm kubelet kubectl; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "Error: $cmd not found or not in PATH"
+        echo "Please ensure Kubernetes components are properly installed"
+        exit 1
+    fi
+done
+
+# Check 7: Verify port availability
+for port in 6443 10250 10251 10252; do
+    if ss -tulwn | grep -q ":$port "; then
+        echo "Error: Port $port is already in use"
+        echo "Kubernetes requires this port to be available"
+        exit 1
+    fi
+done
+
+# Check 8: Check if swap is disabled
+if grep -q '[^#].*swap' /etc/fstab || swapon --show; then
+    echo "Warning: Swap is enabled. Kubernetes requires swap to be disabled."
+    echo "Attempting to disable swap..."
+    swapoff -a
+    
+    # Check if swap was successfully disabled
+    if swapon --show; then
+        echo "Error: Failed to disable swap. Please disable swap manually before continuing."
+        exit 1
+    else
+        echo "Swap successfully disabled for current session."
+        echo "To permanently disable swap, remove or comment swap entries in /etc/fstab."
+    fi
+fi
+
+echo "All pre-flight checks passed. Proceeding with control plane initialization..."
+echo "======================================================================"
+
+# Get current node properties
 NODE_IP=$(get_current_node_property "vpn_ip")
 NODE_INTERFACE=$(get_current_node_property "interface")
 NODE_POD_CIDR=$(get_current_node_property "pod_cidr")

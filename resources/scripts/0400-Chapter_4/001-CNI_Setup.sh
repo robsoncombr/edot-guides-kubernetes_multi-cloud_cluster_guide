@@ -78,9 +78,120 @@ for IFACE in "${!INTERFACES[@]}"; do
     echo "- $IFACE"
 done
 
-# Create the Flannel namespace and apply the ConfigMap first
-echo "Creating Flannel namespace and ConfigMap..."
-kubectl apply -f $MANIFEST_DIR/kube-flannel-base.yml
+# Create the Flannel namespace first
+cat > $MANIFEST_DIR/kube-flannel-namespace.yml << EOF
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-flannel
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    app.kubernetes.io/name: flannel
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flannel
+  namespace: kube-flannel
+  labels:
+    app.kubernetes.io/name: flannel
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: flannel
+  labels:
+    app.kubernetes.io/name: flannel
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  verbs:
+  - patch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - clustercidrs
+  verbs:
+  - list
+  - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: flannel
+  labels:
+    app.kubernetes.io/name: flannel
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: flannel
+subjects:
+- kind: ServiceAccount
+  name: flannel
+  namespace: kube-flannel
+EOF
+
+# Create the Flannel ConfigMap with our network settings
+cat > $MANIFEST_DIR/kube-flannel-configmap.yml << EOF
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: kube-flannel-cfg
+  namespace: kube-flannel
+  labels:
+    app.kubernetes.io/name: flannel
+data:
+  cni-conf.json: |
+    {
+      "name": "cbr0",
+      "cniVersion": "0.3.1",
+      "plugins": [
+        {
+          "type": "flannel",
+          "delegate": {
+            "hairpinMode": true,
+            "isDefaultGateway": true
+          }
+        },
+        {
+          "type": "portmap",
+          "capabilities": {
+            "portMappings": true
+          }
+        }
+      ]
+    }
+  net-conf.json: |
+    {
+      "Network": "$POD_CIDR",
+      "Backend": {
+        "Type": "vxlan"
+      }
+    }
+EOF
+
+# Apply the Flannel namespace, service account, and ConfigMap
+echo "Creating Flannel namespace, RBAC, and ConfigMap..."
+kubectl apply -f $MANIFEST_DIR/kube-flannel-namespace.yml
+kubectl apply -f $MANIFEST_DIR/kube-flannel-configmap.yml
 
 # Create a Flannel DaemonSet for each interface
 for IFACE in "${!INTERFACES[@]}"; do
@@ -134,14 +245,19 @@ spec:
                 operator: In
                 values:
                 - linux
-            - matchExpressions:
               - key: kubernetes.io/hostname
                 operator: In
                 values:
-                $(for SELECTOR in "${NODE_SELECTORS[@]}"; do 
-                  NODE_NAME=$(echo $SELECTOR | cut -d: -f2 | tr -d ' ')
-                  echo "                - $NODE_NAME"
-                done)
+EOF
+
+    # Add the node hostnames separately to avoid YAML formatting issues
+    for SELECTOR in "${NODE_SELECTORS[@]}"; do
+      NODE_NAME=$(echo $SELECTOR | cut -d: -f2 | tr -d ' ')
+      echo "                - $NODE_NAME" >> $MANIFEST_DIR/kube-flannel-ds-$IFACE.yml
+    done
+
+    # Continue with the rest of the DaemonSet template
+    cat >> $MANIFEST_DIR/kube-flannel-ds-$IFACE.yml << EOF
       hostNetwork: true
       priorityClassName: system-node-critical
       tolerations:
@@ -268,6 +384,7 @@ FLANNEL_NETWORK=$POD_CIDR
 FLANNEL_SUBNET=$CP_POD_CIDR
 FLANNEL_MTU=1450
 FLANNEL_IPMASQ=true
+FLANNEL_IFACE=$CP_INTERFACE
 EOF
 
 # Display status message

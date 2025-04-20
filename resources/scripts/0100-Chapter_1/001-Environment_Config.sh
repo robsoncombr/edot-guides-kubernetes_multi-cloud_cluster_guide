@@ -44,6 +44,7 @@ NODE_CP1="k8s-01-oci-01:172.16.0.1:10.10.1.0/24:enp0s6:control-plane:172.16.0.1"
 # Worker nodes
 NODE_W1="k8s-02-oci-02:172.16.0.2:10.10.2.0/24:enp0s6:worker:172.16.0.2"
 NODE_W2="k8s-03-htg-01:172.16.0.3:10.10.3.0/24:eth0:worker:172.16.0.3"
+# NODE_W3="" # Uncomment and configure when needed
 
 # Combined array of all nodes
 ALL_NODES=("$NODE_CP1" "$NODE_W1" "$NODE_W2")
