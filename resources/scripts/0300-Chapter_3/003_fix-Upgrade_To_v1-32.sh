@@ -1,5 +1,9 @@
 #!/bin/bash
 
+#* This fix was created during work on the guide to assist with the ad-hoc upgrade to Kubernetes v1.32.
+#* The solution is implemented by setting the KUBERNETES_VERSION variable in the 
+#* 001-Add_Kubernetes_Repositories_and_Install.sh script.
+
 # First, perform a cleanup of the old installation
 echo "Cleaning up existing Kubernetes installation..."
 

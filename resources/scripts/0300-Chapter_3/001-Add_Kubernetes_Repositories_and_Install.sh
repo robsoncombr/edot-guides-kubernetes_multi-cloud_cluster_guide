@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Define Kubernetes version
-KUBERNETES_VERSION=1.32
-
 # First Apply Fixes
 #./002_fix-Duplicate_Repository_Entries.sh #* this fix was removed since we implemented the correct removal keys and repositories when running '/resources/scripts/0399-Chapter_3-Addendums/0399-Chapter_3-Addendum-Cleaning_Up_Kubernetes_Before_Fresh_Installation.sh'
+
+# Define Kubernetes version
+KUBERNETES_VERSION=1.32
 
 # Create a script to add Kubernetes repositories and install components
 cat > /tmp/install_kubernetes.sh << EOF

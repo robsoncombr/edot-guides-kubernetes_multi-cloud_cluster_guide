@@ -397,6 +397,21 @@ kubectl get pods -n kube-system
 
 ## 3.4 Joining Worker Nodes to the Cluster
 
+### 3.4.1 CIDR Allocations
+
+To ensure proper node-to-node communication, we've designed our Kubernetes network with specific CIDR ranges:
+
+- **Service CIDR**: 10.1.0.0/16 (defined during kubeadm init)
+- **Pod CIDR**: 10.10.0.0/16 (used by Flannel)
+- **Node-specific pod CIDRs**:
+  - Node 01 (k8s-01-oci-01): 10.10.1.0/24
+  - Node 02 (k8s-02-oci-02): 10.10.2.0/24
+  - Node 03 (k8s-03-htg-01): 10.10.3.0/24
+
+These CIDR ranges will be used when configuring the Flannel CNI in Chapter 4. We'll ensure each node uses its assigned subnet for pod networking.
+
+### 3.4.2 Joining Worker Nodes
+
 **[Execute on the control plane node (172.16.0.1) to get the join command]**
 
 After initializing the control plane, you'll receive a join command. If you need to generate a new one:

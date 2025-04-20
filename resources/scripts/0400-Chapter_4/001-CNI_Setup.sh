@@ -1,34 +1,78 @@
 #!/bin/bash
 
+# ============================================================================
 # 001-CNI_Setup.sh - Script to install and configure Flannel CNI
-# This script should be executed on the control plane node after kubeadm init
+# ============================================================================
+# 
+# DESCRIPTION:
+#   This script installs and configures Flannel as the Container Network Interface 
+#   (CNI) for the Kubernetes cluster. It performs node-specific pod CIDR assignments
+#   and creates helper scripts for worker node networking configuration.
+#
+# USAGE:
+#   ./001-CNI_Setup.sh
+#
+# ARGUMENTS:
+#   None
+#
+# ORDER OF USE:
+#   1. Run only on the control plane node (k8s-01-oci-01)
+#   2. Run after Kubernetes cluster initialization and before joining worker nodes
+#   3. Can be run after worker nodes join to apply/fix node CIDR assignments
+#
+# CIDR ALLOCATIONS:
+#   - Service CIDR: 10.1.0.0/16 (defined during kubeadm init)
+#   - Pod CIDR: 10.10.0.0/16 (used by Flannel)
+#   - Node-specific pod CIDRs:
+#     - Node 01 (k8s-01-oci-01): 10.10.1.0/24
+#     - Node 02 (k8s-02-oci-02): 10.10.2.0/24
+#     - Node 03 (k8s-03-htg-01): 10.10.3.0/24
+#
+# NOTES:
+#   - Requires root privileges to run
+#   - Uses the dedicated fix script at ../0400-Chapter_4/001_fix-Flannel_Subnet.sh for nodes
+#   - After worker nodes join the cluster, they should run the fix script
+#   - Flannel DaemonSet will be deployed to all nodes in the cluster automatically
+# ============================================================================
 
-echo "Setting up Flannel CNI for Kubernetes cluster..."
-echo "======================================================================================="
-echo "This will configure Flannel with the following settings:"
-echo "- Pod CIDR: 10.10.0.0/16 (as configured in kubeadm-config.yaml)"
-echo "- Node 01 pods: 10.10.1.0/24"
-echo "- Node 02 pods: 10.10.2.0/24"
-echo "- Node 03 pods: 10.10.3.0/24"
-echo "- Using VPN network 172.16.0.0/16 for inter-node communication"
-echo "======================================================================================="
+echo "========================================================================"
+echo "Installing and Configuring Flannel CNI with Custom Pod CIDR Allocation"
+echo "========================================================================"
 
-# Ensure we're running as root
+# Ensure running as root
 if [[ $EUID -ne 0 ]]; then
     echo "This script must be run as root"
     exit 1
 fi
 
-# Ensure kubectl is available and the cluster is accessible
-if ! kubectl get nodes &>/dev/null; then
-    echo "Error: kubectl cannot access the Kubernetes cluster."
-    echo "Make sure you have initialized the control plane and set up kubectl properly."
+# Check if script is running on control plane node
+HOSTNAME=$(hostname)
+if [[ "$HOSTNAME" != "k8s-01-oci-01" ]]; then
+    echo "Error: This script must be run on the control plane node (k8s-01-oci-01)"
+    echo "Current host: $HOSTNAME"
     exit 1
 fi
 
-# Create a custom flannel configuration with our specific subnet settings
-echo "Creating custom Flannel configuration..."
-cat > /tmp/kube-flannel.yaml << 'EOF'
+echo "Step 1: Patching nodes with specific CIDR ranges..."
+
+# Patch the control plane node
+kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}'
+echo "Control plane node patched with CIDR 10.10.1.0/24"
+
+# Check if worker nodes have already joined and patch them
+if kubectl get node k8s-02-oci-02 &>/dev/null; then
+    kubectl patch node k8s-02-oci-02 -p '{"spec":{"podCIDR":"10.10.2.0/24","podCIDRs":["10.10.2.0/24"]}}'
+    echo "Worker node k8s-02-oci-02 patched with CIDR 10.10.2.0/24"
+fi
+
+if kubectl get node k8s-03-htg-01 &>/dev/null; then
+    kubectl patch node k8s-03-htg-01 -p '{"spec":{"podCIDR":"10.10.3.0/24","podCIDRs":["10.10.3.0/24"]}}'
+    echo "Worker node k8s-03-htg-01 patched with CIDR 10.10.3.0/24"
+fi
+
+echo "Step 2: Creating custom Flannel configuration file..."
+# Create custom Flannel configuration
+cat > /tmp/kube-flannel.yaml << 'EOF2'
 ---
 kind: Namespace
 apiVersion: v1
@@ -233,121 +277,42 @@ spec:
         hostPath:
           path: /run/xtables.lock
           type: FileOrCreate
-EOF
+EOF2
 
-# Apply the Flannel configuration
-echo "Applying Flannel CNI to Kubernetes cluster..."
+echo "Step 3: Applying Flannel configuration..."
 kubectl apply -f /tmp/kube-flannel.yaml
+# Clean up
+rm -f /tmp/kube-flannel.yaml
 
-# Create a script to set up pod CIDRs for each node
-echo "Creating node-specific pod CIDR configuration..."
-cat > /tmp/setup-node-cidrs.yaml << EOF
-apiVersion: v1
-kind: Node
-metadata:
-  name: k8s-01-oci-01
-spec:
-  podCIDR: "10.10.1.0/24"
-  podCIDRs:
-  - "10.10.1.0/24"
----
-apiVersion: v1
-kind: Node
-metadata:
-  name: k8s-02-oci-02
-spec:
-  podCIDR: "10.10.2.0/24"
-  podCIDRs:
-  - "10.10.2.0/24"
----
-apiVersion: v1
-kind: Node
-metadata:
-  name: k8s-03-htg-01
-spec:
-  podCIDR: "10.10.3.0/24"
-  podCIDRs:
-  - "10.10.3.0/24"
-EOF
+# Swap steps 4 and 5 for better logical flow
+echo "Step 4: Using the dedicated fix script for worker nodes..."
+# Reference the existing fix script
+FLANNEL_FIX_SCRIPT="$(dirname "$0")/001_fix-Flannel_Subnet.sh"
+echo "Worker nodes should use the fix script at: $FLANNEL_FIX_SCRIPT"
+# Check if the control plane node should run the fix script
+if [ -f "$FLANNEL_FIX_SCRIPT" ]; then
+    echo "Running the Flannel subnet fix script on the control plane node..."
+    # Run the fix script but don't restart kubelet on control plane to avoid disconnects
+    bash "$FLANNEL_FIX_SCRIPT" --no-restart
+else
+    echo "Warning: Fix script not found at $FLANNEL_FIX_SCRIPT"
+    echo "Flannel fix script must be separately applied to worker nodes after joining."
+fi
 
-# Function to set node pod CIDR
-setup_node_cidr() {
-  local node=$1
-  local cidr=$2
-  
-  # Wait for node to be available
-  echo "Checking if node $node is available..."
-  if kubectl get node $node &>/dev/null; then
-    echo "Setting pod CIDR $cidr for node $node"
-    kubectl patch node $node -p "{\"spec\":{\"podCIDR\":\"$cidr\",\"podCIDRs\":[\"$cidr\"]}}"
-  else
-    echo "Node $node is not yet available. It will be configured when it joins the cluster."
-  fi
-}
+echo "Step 5: Waiting for Flannel pods to be ready..."
+# Wait for Flannel pods to be running
+kubectl -n kube-flannel wait --for=condition=ready pods --selector=app=flannel --timeout=120s
 
-# Apply pod CIDRs for each node
-echo "Configuring per-node pod CIDR allocations..."
-setup_node_cidr "k8s-01-oci-01" "10.10.1.0/24"
-setup_node_cidr "k8s-02-oci-02" "10.10.2.0/24"
-setup_node_cidr "k8s-03-htg-01" "10.10.3.0/24"
+echo "Step 6: Verifying node status and CIDR allocation..."
+# Check node status and CIDR allocation
+kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[0].address,POD-CIDR:.spec.podCIDR
 
-# Create a helper script to fix flannel configuration on worker nodes
-echo "Creating helper script for worker nodes..."
-cat > /tmp/fix-flannel-subnet.sh << 'EOF'
-#!/bin/bash
-# Helper script to configure flannel on worker nodes properly
-# This should be run on worker nodes after joining the cluster if there are network issues
-
-NODE_NAME=$(hostname)
-NODE_NUM=${NODE_NAME##*-}
-NODE_NUM=${NODE_NUM##*0}
-POD_CIDR="10.10.${NODE_NUM}.0/24"
-
-echo "Configuring flannel subnet for $NODE_NAME with CIDR $POD_CIDR"
-
-# Ensure CNI directory exists
-mkdir -p /run/flannel
-
-# Create subnet.env file with correct CIDR
-echo "FLANNEL_NETWORK=10.10.0.0/16" > /run/flannel/subnet.env
-echo "FLANNEL_SUBNET=$POD_CIDR" >> /run/flannel/subnet.env
-echo "FLANNEL_MTU=1450" >> /run/flannel/subnet.env
-echo "FLANNEL_IPMASQ=true" >> /run/flannel/subnet.env
-
-echo "Subnet configured. Restarting kubelet..."
-systemctl restart kubelet
-EOF
-
-chmod +x /tmp/fix-flannel-subnet.sh
-
-echo "Waiting for CNI pods to start..."
-sleep 10
-
-echo "Checking pods in kube-flannel namespace:"
-kubectl get pods -n kube-flannel
-
-echo "Checking nodes status:"
-kubectl get nodes -o wide
-kubectl get pods --all-namespaces -o wide
-
-echo "======================================================================================="
-echo "Flannel CNI installation complete!"
-echo ""
+echo "========================================================================"
+echo "Flannel CNI installed successfully!"
 echo "IMPORTANT NOTES:"
 echo "1. It may take a minute or two for the CNI pods to become Ready"
-echo "2. If you experience any networking issues on worker nodes after joining,"
-echo "   transfer and run the helper script generated at /tmp/fix-flannel-subnet.sh"
-echo "======================================================================================="
-
-echo ""
-echo "Monitoring the CNI pod status:"
-kubectl get pods -n kube-flannel -w -o wide &
-WATCH_PID=$!
-sleep 30
-kill $WATCH_PID
-
-echo ""
-echo "NEXT STEP:"
-echo "1. Wait for CNI to be fully initialized (control plane node should change to Ready)"
-echo "2. Return to Chapter 3 to complete joining worker nodes to the cluster"
-echo ""
+echo "2. For worker nodes, use the fix script at: $FLANNEL_FIX_SCRIPT"
+echo "3. On the control plane node, patch worker nodes after they join:"
+echo "   kubectl patch node k8s-02-oci-02 -p '{\"spec\":{\"podCIDR\":\"10.10.2.0/24\",\"podCIDRs\":[\"10.10.2.0/24\"]}}'"
+echo "   kubectl patch node k8s-03-htg-01 -p '{\"spec\":{\"podCIDR\":\"10.10.3.0/24\",\"podCIDRs\":[\"10.10.3.0/24\"]}}'"
+echo "========================================================================"
