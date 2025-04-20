@@ -51,27 +51,33 @@ echo "======================================================================="
 NODE_NAME=$(hostname)
 echo "Current hostname: $NODE_NAME"
 
-# Extract node number using improved pattern matching for format like k8s-01-oci-01
-if [[ $NODE_NAME =~ k8s-([0-9]+)[-] ]]; then
-  NODE_NUM=${BASH_REMATCH[1]}
-  # Remove any leading zeros
-  NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
+# Special case for the control plane node - assign 10.10.1.0/24
+if [[ "$NODE_NAME" == "k8s-01-oci-01" ]]; then
+  # Control plane gets 10.10.1.0/24 as configured in our requirements
+  POD_CIDR="10.10.1.0/24"
 else
-  # Fallback for alternative hostname formats
-  NODE_NUM=${NODE_NAME##*-}
-  # Remove any leading zeros
-  NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
-fi
+  # For worker nodes, extract the node number and use it for CIDR
+  if [[ $NODE_NAME =~ k8s-([0-9]+)[-] ]]; then
+    NODE_NUM=${BASH_REMATCH[1]}
+    # Remove any leading zeros
+    NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
+  else
+    # Fallback for alternative hostname formats
+    NODE_NUM=${NODE_NAME##*-}
+    # Remove any leading zeros
+    NODE_NUM=$(echo $NODE_NUM | sed 's/^0*//')
+  fi
 
-# Safety check to ensure we have a valid node number
-if [[ ! $NODE_NUM =~ ^[0-9]+$ ]]; then
-  echo "Error: Could not extract valid node number from hostname."
-  echo "Please ensure hostname follows the expected format (k8s-XX-*)"
-  exit 1
-fi
+  # Safety check to ensure we have a valid node number
+  if [[ ! $NODE_NUM =~ ^[0-9]+$ ]]; then
+    echo "Error: Could not extract valid node number from hostname."
+    echo "Please ensure hostname follows the expected format (k8s-XX-*)"
+    exit 1
+  fi
 
-# Configure the pod CIDR based on node number
-POD_CIDR="10.10.${NODE_NUM}.0/24"
+  # Configure the pod CIDR based on node number
+  POD_CIDR="10.10.${NODE_NUM}.0/24"
+fi
 
 echo "Configuring flannel subnet for $NODE_NAME with CIDR $POD_CIDR"
 

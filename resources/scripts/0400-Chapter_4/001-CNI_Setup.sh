@@ -55,19 +55,45 @@ fi
 
 echo "Step 1: Patching nodes with specific CIDR ranges..."
 
-# Patch the control plane node
-kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}'
-echo "Control plane node patched with CIDR 10.10.1.0/24"
+# Check the control plane node's existing CIDR
+CURRENT_CIDR=$(kubectl get node k8s-01-oci-01 -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+if [ -z "$CURRENT_CIDR" ]; then
+    # If not set, set it to 10.10.1.0/24 as specified in requirements
+    kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}'
+    echo "Control plane node patched with CIDR 10.10.1.0/24"
+    CONTROL_PLANE_CIDR="10.10.1.0/24"
+elif [ "$CURRENT_CIDR" != "10.10.1.0/24" ]; then
+    # Try to update if it's not already 10.10.1.0/24
+    # Note: Kubernetes may reject this if the node already has a CIDR assigned
+    echo "Attempting to update control plane node CIDR from $CURRENT_CIDR to 10.10.1.0/24"
+    kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}' || true
+    CURRENT_CIDR=$(kubectl get node k8s-01-oci-01 -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+    echo "Control plane node now has CIDR $CURRENT_CIDR"
+    CONTROL_PLANE_CIDR="$CURRENT_CIDR"
+else
+    echo "Control plane node already has correct CIDR $CURRENT_CIDR"
+    CONTROL_PLANE_CIDR="$CURRENT_CIDR"
+fi
 
-# Check if worker nodes have already joined and patch them
+# Similarly check worker nodes before patching
 if kubectl get node k8s-02-oci-02 &>/dev/null; then
-    kubectl patch node k8s-02-oci-02 -p '{"spec":{"podCIDR":"10.10.2.0/24","podCIDRs":["10.10.2.0/24"]}}'
-    echo "Worker node k8s-02-oci-02 patched with CIDR 10.10.2.0/24"
+    CURRENT_CIDR=$(kubectl get node k8s-02-oci-02 -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+    if [ -z "$CURRENT_CIDR" ]; then
+        kubectl patch node k8s-02-oci-02 -p '{"spec":{"podCIDR":"10.10.2.0/24","podCIDRs":["10.10.2.0/24"]}}'
+        echo "Worker node k8s-02-oci-02 patched with CIDR 10.10.2.0/24"
+    else
+        echo "Worker node k8s-02-oci-02 already has CIDR $CURRENT_CIDR, respecting existing configuration"
+    fi
 fi
 
 if kubectl get node k8s-03-htg-01 &>/dev/null; then
-    kubectl patch node k8s-03-htg-01 -p '{"spec":{"podCIDR":"10.10.3.0/24","podCIDRs":["10.10.3.0/24"]}}'
-    echo "Worker node k8s-03-htg-01 patched with CIDR 10.10.3.0/24"
+    CURRENT_CIDR=$(kubectl get node k8s-03-htg-01 -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+    if [ -z "$CURRENT_CIDR" ]; then
+        kubectl patch node k8s-03-htg-01 -p '{"spec":{"podCIDR":"10.10.3.0/24","podCIDRs":["10.10.3.0/24"]}}'
+        echo "Worker node k8s-03-htg-01 patched with CIDR 10.10.3.0/24"
+    else
+        echo "Worker node k8s-03-htg-01 already has CIDR $CURRENT_CIDR, respecting existing configuration"
+    fi
 fi
 
 echo "Step 2: Creating custom Flannel configuration file..."

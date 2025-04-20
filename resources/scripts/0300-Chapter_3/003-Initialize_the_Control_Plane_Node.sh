@@ -19,6 +19,12 @@ controlPlaneEndpoint: "172.16.0.1:6443"
 apiServer:
   certSANs:
   - "172.16.0.1"
+controllerManager:
+  extraArgs:
+    # Configure the controller manager to use specific CIDR ranges
+    cluster-cidr: "10.10.0.0/16"
+    node-cidr-mask-size: "24"
+    allocate-node-cidrs: "true"
 ---
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
@@ -34,6 +40,11 @@ echo "Setting up kubeconfig for root user..."
 mkdir -p $HOME/.kube
 cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Patch the control plane node to use the correct CIDR range
+echo "Patching control plane node with specific CIDR range..."
+kubectl patch node k8s-01-oci-01 -p '{"spec":{"podCIDR":"10.10.1.0/24","podCIDRs":["10.10.1.0/24"]}}' || \
+  echo "Note: Could not patch the node CIDR immediately. This will be handled in the CNI setup script."
 
 # Display kubeconfig setup message
 echo ""
