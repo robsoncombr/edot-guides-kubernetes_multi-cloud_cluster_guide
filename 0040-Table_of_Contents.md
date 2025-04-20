@@ -10,6 +10,7 @@
 - Operating System and Hardware Requirements
 - Docker configuration for Kubernetes compatibility
 - WireGuard VPN confirmation and testing
+- Disable Swap
 
 ### [Chapter 3: Kubernetes Installation and Basic Configuration](0300-Chapter_3-Kubernetes_Installation_and_Basic_Configuration.md)
 - Installing Kubernetes components (kubelet, kubeadm, kubectl)
