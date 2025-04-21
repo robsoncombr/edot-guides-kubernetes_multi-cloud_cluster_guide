@@ -363,29 +363,38 @@ CP_HOSTNAME=$(get_node_property "${NODE_CP1}" 0)
 CP_POD_CIDR=$(get_node_property "${NODE_CP1}" 2)
 CURRENT_CIDR=$(kubectl get node "$CP_HOSTNAME" -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
 
+# Let Kubernetes assign the CIDR naturally - don't force it
 if [ -z "$CURRENT_CIDR" ]; then
-    echo "Patching control plane node with specific CIDR range: $CP_POD_CIDR"
-    kubectl patch node "$CP_HOSTNAME" -p "{\"spec\":{\"podCIDR\":\"$CP_POD_CIDR\",\"podCIDRs\":[\"$CP_POD_CIDR\"]}}"
+    echo "Control plane node doesn't have a Pod CIDR assigned yet."
+    echo "Kubernetes will assign the Pod CIDR automatically."
 elif [ "$CURRENT_CIDR" != "$CP_POD_CIDR" ]; then
-    echo "Warning: Control plane node has CIDR $CURRENT_CIDR instead of $CP_POD_CIDR"
-    echo "The pod CIDR mismatch will be handled by Flannel subnet configuration"
+    echo "Note: Control plane node has CIDR $CURRENT_CIDR (environment config specifies $CP_POD_CIDR)"
+    echo "Using the Kubernetes-assigned CIDR for proper compatibility."
+    # Update our reference to use the actual assigned CIDR
+    CP_POD_CIDR=$CURRENT_CIDR
 else
-    echo "Control plane node already has the correct CIDR: $CP_POD_CIDR"
+    echo "Control plane node already has CIDR: $CP_POD_CIDR"
 fi
 
-# Configure Flannel subnet on the control plane
+# Configure Flannel subnet on the control plane to use whatever CIDR is assigned
 CP_INTERFACE=$(get_node_property "${NODE_CP1}" 3)
 echo "Configuring Flannel subnet on control plane with interface $CP_INTERFACE..."
 
-# Set up Flannel subnet configuration on the control plane
-mkdir -p /run/flannel
-cat > /run/flannel/subnet.env << EOF
+# Only configure Flannel if we actually have a CIDR
+if [ -n "$CURRENT_CIDR" ]; then
+    # Set up Flannel subnet configuration on the control plane using the actual assigned CIDR
+    mkdir -p /run/flannel
+    cat > /run/flannel/subnet.env << EOF
 FLANNEL_NETWORK=$POD_CIDR
-FLANNEL_SUBNET=$CP_POD_CIDR
+FLANNEL_SUBNET=$CURRENT_CIDR
 FLANNEL_MTU=1450
 FLANNEL_IPMASQ=true
 FLANNEL_IFACE=$CP_INTERFACE
 EOF
+    echo "Flannel subnet configuration created using CIDR: $CURRENT_CIDR"
+else
+    echo "No Pod CIDR assigned yet. Flannel will use the CIDR when Kubernetes assigns it."
+fi
 
 # Display status message
 echo "======================================================================"

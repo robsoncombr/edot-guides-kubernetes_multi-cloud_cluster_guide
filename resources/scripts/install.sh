@@ -103,14 +103,28 @@ run_script() {
     echo "STEP: $description"
     echo "======================================================================"
     
+    # Check for alternate script name formats (hyphen vs underscore)
     if [[ ! -f "$script_path" ]]; then
-        echo "Error: Script not found: $script_path"
-        if [[ "$required" == "required" ]]; then
-            echo "This is a required script. Cannot continue."
-            exit 1
+        # Try alternate naming format
+        local alt_script_path="${script_path//-/_}"
+        if [[ -f "$alt_script_path" ]]; then
+            script_path="$alt_script_path"
         else
-            echo "This is an optional script. Continuing without it."
-            return 0
+            alt_script_path="${script_path//_/-}"
+            if [[ -f "$alt_script_path" ]]; then
+                script_path="$alt_script_path"
+            else
+                echo "Error: Script not found: $script_path"
+                echo "Also tried: ${script_path//-/_}"
+                echo "And: ${script_path//_/-}"
+                if [[ "$required" == "required" ]]; then
+                    echo "This is a required script. Cannot continue."
+                    exit 1
+                else
+                    echo "This is an optional script. Continuing without it."
+                    return 0
+                fi
+            fi
         fi
     fi
     
@@ -126,7 +140,7 @@ run_script() {
         fi
     fi
     
-    echo "Executing $script..."
+    echo "Executing $script_path..."
     chmod +x "$script_path"
     "$script_path"
     
@@ -227,6 +241,39 @@ run_script "0200-Chapter_2/001-Environment_Verification.sh" "Verifying environme
 run_script "0200-Chapter_2/002-Install-Dependencies.sh" "Installing required dependencies" "required"
 run_script "0200-Chapter_2/003-Disable-Swap.sh" "Disabling swap (required for Kubernetes)" "required"
 
+# Double-check swap is still disabled after Chapter 2
+echo "Double-checking swap is still disabled..."
+SWAP_STATUS=$(free | grep -i swap | awk '{print $2}')
+if [ "$SWAP_STATUS" != "0" ]; then
+    echo "Warning: Swap still appears to be enabled ($SWAP_STATUS). Attempting more aggressive disabling..."
+    swapoff -a
+    mount | grep -i swap | awk '{print $1}' | xargs -r swapoff
+    sed -i '/swap/s/^\(.*\)$/#\1/g' /etc/fstab
+    
+    # Check again with the same method
+    SWAP_STATUS=$(free | grep -i swap | awk '{print $2}')
+    if [ "$SWAP_STATUS" != "0" ]; then
+        echo "Error: Failed to disable swap after multiple attempts. Installation may fail."
+        echo "Consider running: swapoff -a && sed -i '/swap/s/^\(.*\)$/#\1/g' /etc/fstab"
+        echo "Then reboot the system before continuing."
+        
+        if [[ "$AUTO_MODE" != "true" ]]; then
+            read -p "Continue anyway? (y/n): " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "Installation cancelled."
+                exit 1
+            fi
+        else
+            echo "Auto mode: continuing despite swap issue."
+        fi
+    else
+        echo "Swap successfully disabled."
+    fi
+else
+    echo "Swap is disabled (value: $SWAP_STATUS). Proceeding with installation."
+fi
+
 # Chapter 3: Kubernetes Installation
 echo "Chapter 3: Kubernetes Installation"
 run_script "0300-Chapter_3/001-Add_Kubernetes_Repositories_and_Install.sh" "Adding Kubernetes repositories and installing components" "required"
@@ -241,6 +288,8 @@ if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" || "$I
     
     # If in all mode, join worker nodes from control plane
     if [[ "$INSTALL_MODE" == "all" ]]; then
+        # Print a note about automatic Pod CIDR assignment
+        echo "Note: Worker nodes will join with automatic Pod CIDR assignment"
         run_script "0300-Chapter_3/004-Join_Worker_Nodes.sh" "Joining worker nodes to the cluster" "optional"
     fi
     
@@ -268,24 +317,20 @@ if [[ "$IS_WORKER" == "true" || "$INSTALL_MODE" == "worker" ]]; then
     echo ""
     echo "2. Take the output from that command and run it on this worker node (as root)"
     echo ""
-    echo "3. After joining, ensure Flannel is configured correctly by running:"
-    echo "   ${SCRIPT_DIR}/0400-Chapter_4/001_fix-Flannel_Subnet.sh"
+    echo "3. The Pod CIDR will be automatically assigned by Kubernetes"
     echo ""
     
     if [[ "$AUTO_MODE" != "true" ]]; then
         read -p "Have you run the join command on this worker node? (y/n): " -n 1 -r
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            run_script "0400-Chapter_4/001_fix-Flannel_Subnet.sh" "Configuring Flannel subnet on worker node" "optional"
-            
             echo ""
             echo "Worker node setup completed!"
             echo ""
             echo "You can check the status of your node on the control plane with:"
             echo "  kubectl get nodes -o wide"
         else
-            echo "Please join the worker node to the cluster first, then run:"
-            echo "  ${SCRIPT_DIR}/0400-Chapter_4/001_fix-Flannel_Subnet.sh"
+            echo "Please join the worker node to the cluster first."
         fi
     fi
 fi

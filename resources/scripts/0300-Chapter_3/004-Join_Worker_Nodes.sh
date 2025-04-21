@@ -174,18 +174,59 @@ for NODE_CONFIG in "${NODE_W1}" "${NODE_W2}"; do
             if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
                 echo "Warning: Node ${NODE_NAME} did not appear in the cluster after waiting"
             else
-                # Patch the node with the correct CIDR if needed
-                echo "Checking and patching CIDR for node ${NODE_NAME}..."
+                # Let Kubernetes assign the Pod CIDR automatically - don't force it
+                echo "Kubernetes will assign Pod CIDR for node ${NODE_NAME} automatically."
+                
+                # Check current CIDR
                 CURRENT_CIDR=$(kubectl get node "${NODE_NAME}" -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
+                
                 if [ -z "$CURRENT_CIDR" ]; then
-                    echo "Patching node ${NODE_NAME} with CIDR ${NODE_POD_CIDR}"
-                    kubectl patch node "${NODE_NAME}" -p "{\"spec\":{\"podCIDR\":\"${NODE_POD_CIDR}\",\"podCIDRs\":[\"${NODE_POD_CIDR}\"]}}" || \
-                        echo "Warning: Could not patch node CIDR. Check manually."
-                elif [ "$CURRENT_CIDR" != "$NODE_POD_CIDR" ]; then
-                    echo "Warning: Node ${NODE_NAME} has CIDR ${CURRENT_CIDR} instead of ${NODE_POD_CIDR}"
-                    echo "The pod CIDR mismatch will be handled by Flannel subnet configuration"
+                    echo "Note: Pod CIDR is not yet assigned to node ${NODE_NAME}. Kubernetes will assign it shortly."
                 else
-                    echo "Node ${NODE_NAME} already has the correct CIDR: ${NODE_POD_CIDR}"
+                    echo "Node ${NODE_NAME} has been assigned Pod CIDR: ${CURRENT_CIDR}"
+                    
+                    # If CIDR is different from expected, update the Flannel subnet configuration to match
+                    if [ "$CURRENT_CIDR" != "$NODE_POD_CIDR" ]; then
+                        echo "Note: Kubernetes assigned ${CURRENT_CIDR} instead of expected ${NODE_POD_CIDR}"
+                        echo "Updating Flannel subnet configuration to match the Kubernetes-assigned CIDR..."
+                        
+                        # Create script to update Flannel config to match whatever Kubernetes assigned
+                        FLANNEL_UPDATE_SCRIPT="/tmp/update_flannel_${NODE_NAME}.sh"
+                        cat > "$FLANNEL_UPDATE_SCRIPT" << EOF
+#!/bin/bash
+# Update Flannel subnet configuration with the Kubernetes-assigned CIDR
+ASSIGNED_CIDR="${CURRENT_CIDR}"
+echo "Updating Flannel subnet configuration with Kubernetes-assigned CIDR: \${ASSIGNED_CIDR}"
+
+mkdir -p /run/flannel
+cat > /run/flannel/subnet.env << EOL
+FLANNEL_NETWORK=${POD_CIDR}
+FLANNEL_SUBNET=\${ASSIGNED_CIDR}
+FLANNEL_MTU=1450
+FLANNEL_IPMASQ=true
+FLANNEL_IFACE=${NODE_INTERFACE}
+EOL
+
+# Restart the Flannel pod to apply changes
+FLANNEL_PODS=\$(crictl pods --name flannel -q 2>/dev/null)
+if [ -n "\$FLANNEL_PODS" ]; then
+    echo "Restarting Flannel pods: \$FLANNEL_PODS"
+    crictl rmp -f \$FLANNEL_PODS
+else
+    echo "No Flannel pods found using crictl, trying to restart kubelet"
+    systemctl restart kubelet
+fi
+
+echo "Flannel subnet configuration updated to match Kubernetes-assigned CIDR: \${ASSIGNED_CIDR}"
+EOF
+                        chmod +x "$FLANNEL_UPDATE_SCRIPT"
+                        scp -o StrictHostKeyChecking=no "$FLANNEL_UPDATE_SCRIPT" "root@${NODE_IP}:/tmp/"
+                        ssh -o StrictHostKeyChecking=no "root@${NODE_IP}" "bash /tmp/update_flannel_${NODE_NAME}.sh && rm -f /tmp/update_flannel_${NODE_NAME}.sh"
+                        
+                        echo "Flannel subnet configuration updated on ${NODE_NAME} to match Kubernetes-assigned CIDR"
+                    else
+                        echo "Node ${NODE_NAME} was assigned the expected CIDR: ${CURRENT_CIDR}"
+                    fi
                 fi
             fi
         else

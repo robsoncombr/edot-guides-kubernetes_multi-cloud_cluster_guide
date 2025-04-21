@@ -92,19 +92,42 @@ for port in 6443 10250 10251 10252; do
 done
 
 # Check 8: Check if swap is disabled
-if grep -q '[^#].*swap' /etc/fstab || swapon --show; then
-    echo "Warning: Swap is enabled. Kubernetes requires swap to be disabled."
-    echo "Attempting to disable swap..."
-    swapoff -a
+SWAP_ENABLED=$(free | grep -i swap | awk '{print $2}')
+if [ "$SWAP_ENABLED" != "0" ]; then
+    echo "Warning: Swap appears to be enabled. Kubernetes requires swap to be disabled."
+    echo "Calling the swap disabling script..."
     
-    # Check if swap was successfully disabled
-    if swapon --show; then
-        echo "Error: Failed to disable swap. Please disable swap manually before continuing."
-        exit 1
+    # Call the existing swap disabling script
+    DISABLE_SWAP_SCRIPT="$(realpath "$SCRIPT_DIR/../0200-Chapter_2/003-Disable-Swap.sh")"
+    if [ -f "$DISABLE_SWAP_SCRIPT" ]; then
+        bash "$DISABLE_SWAP_SCRIPT"
+        
+        # Verify swap is now disabled
+        SWAP_ENABLED=$(free | grep -i swap | awk '{print $2}')
+        if [ "$SWAP_ENABLED" != "0" ]; then
+            echo "Error: Swap is still enabled after running the disabling script."
+            echo "Please check why swap disabling failed and try again."
+            exit 1
+        else
+            echo "Swap successfully disabled. Continuing with installation."
+        fi
     else
-        echo "Swap successfully disabled for current session."
-        echo "To permanently disable swap, remove or comment swap entries in /etc/fstab."
+        echo "Error: Swap disabling script not found at $DISABLE_SWAP_SCRIPT"
+        echo "Attempting to disable swap manually..."
+        swapoff -a
+        sed -i '/swap/s/^\(.*\)$/#\1/g' /etc/fstab
+        
+        # Verify swap is now disabled
+        SWAP_ENABLED=$(free | grep -i swap | awk '{print $2}')
+        if [ "$SWAP_ENABLED" != "0" ]; then
+            echo "Error: Failed to disable swap. Please disable swap manually before continuing."
+            exit 1
+        else
+            echo "Swap successfully disabled manually. Continuing with installation."
+        fi
     fi
+else
+    echo "Swap is already disabled. Continuing with installation."
 fi
 
 echo "All pre-flight checks passed. Proceeding with control plane initialization..."
