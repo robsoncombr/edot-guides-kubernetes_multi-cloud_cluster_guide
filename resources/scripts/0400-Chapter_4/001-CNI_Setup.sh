@@ -52,17 +52,6 @@ fi
 MANIFEST_DIR="/tmp/flannel-manifests"
 mkdir -p $MANIFEST_DIR
 
-# Download the Flannel base manifest
-echo "Downloading Flannel base manifest..."
-curl -s https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml > $MANIFEST_DIR/kube-flannel-base.yml
-
-# Modify the network configuration in the Flannel ConfigMap
-echo "Modifying Flannel ConfigMap to use our Pod CIDR: $POD_CIDR"
-sed -i "s|\"Network\": \"10.244.0.0/16\"|\"Network\": \"$POD_CIDR\"|g" $MANIFEST_DIR/kube-flannel-base.yml
-
-# Disable Flannel default DaemonSet - we'll create our own node-specific DaemonSets
-sed -i '/^---/,$d' $MANIFEST_DIR/kube-flannel-base.yml
-
 # Create a Flannel manifest for each unique network interface
 declare -A INTERFACES
 
@@ -78,8 +67,8 @@ for IFACE in "${!INTERFACES[@]}"; do
     echo "- $IFACE"
 done
 
-# Create the Flannel namespace first
-cat > $MANIFEST_DIR/kube-flannel-namespace.yml << EOF
+# Create the Flannel base resources first (namespace, RBAC, ConfigMap)
+cat > $MANIFEST_DIR/kube-flannel-base.yml << EOF
 ---
 apiVersion: v1
 kind: Namespace
@@ -146,10 +135,6 @@ subjects:
 - kind: ServiceAccount
   name: flannel
   namespace: kube-flannel
-EOF
-
-# Create the Flannel ConfigMap with our network settings
-cat > $MANIFEST_DIR/kube-flannel-configmap.yml << EOF
 ---
 kind: ConfigMap
 apiVersion: v1
@@ -182,16 +167,17 @@ data:
   net-conf.json: |
     {
       "Network": "$POD_CIDR",
+      "EnableNFTables": false,
       "Backend": {
-        "Type": "vxlan"
+        "Type": "vxlan",
+        "MTU": 1450
       }
     }
 EOF
 
-# Apply the Flannel namespace, service account, and ConfigMap
+# Apply the base Flannel resources
 echo "Creating Flannel namespace, RBAC, and ConfigMap..."
-kubectl apply -f $MANIFEST_DIR/kube-flannel-namespace.yml
-kubectl apply -f $MANIFEST_DIR/kube-flannel-configmap.yml
+kubectl apply -f $MANIFEST_DIR/kube-flannel-base.yml
 
 # Create a Flannel DaemonSet for each interface
 for IFACE in "${!INTERFACES[@]}"; do
@@ -206,9 +192,6 @@ for IFACE in "${!INTERFACES[@]}"; do
             NODE_SELECTORS+=("kubernetes.io/hostname: $NODE_NAME")
         fi
     done
-    
-    # Join the node selectors with commas for the nodeAffinity
-    NODE_AFFINITY_SELECTORS=$(IFS=,; echo "${NODE_SELECTORS[*]}")
     
     # Generate the Flannel DaemonSet manifest for this interface
     cat > $MANIFEST_DIR/kube-flannel-ds-$IFACE.yml << EOF
@@ -358,44 +341,6 @@ sleep 10
 echo "Checking Flannel pod status:"
 kubectl -n kube-flannel get pods -o wide
 
-# Check if control plane node has correct CIDR
-CP_HOSTNAME=$(get_node_property "${NODE_CP1}" 0)
-CP_POD_CIDR=$(get_node_property "${NODE_CP1}" 2)
-CURRENT_CIDR=$(kubectl get node "$CP_HOSTNAME" -o jsonpath='{.spec.podCIDR}' 2>/dev/null || echo "")
-
-# Let Kubernetes assign the CIDR naturally - don't force it
-if [ -z "$CURRENT_CIDR" ]; then
-    echo "Control plane node doesn't have a Pod CIDR assigned yet."
-    echo "Kubernetes will assign the Pod CIDR automatically."
-elif [ "$CURRENT_CIDR" != "$CP_POD_CIDR" ]; then
-    echo "Note: Control plane node has CIDR $CURRENT_CIDR (environment config specifies $CP_POD_CIDR)"
-    echo "Using the Kubernetes-assigned CIDR for proper compatibility."
-    # Update our reference to use the actual assigned CIDR
-    CP_POD_CIDR=$CURRENT_CIDR
-else
-    echo "Control plane node already has CIDR: $CP_POD_CIDR"
-fi
-
-# Configure Flannel subnet on the control plane to use whatever CIDR is assigned
-CP_INTERFACE=$(get_node_property "${NODE_CP1}" 3)
-echo "Configuring Flannel subnet on control plane with interface $CP_INTERFACE..."
-
-# Only configure Flannel if we actually have a CIDR
-if [ -n "$CURRENT_CIDR" ]; then
-    # Set up Flannel subnet configuration on the control plane using the actual assigned CIDR
-    mkdir -p /run/flannel
-    cat > /run/flannel/subnet.env << EOF
-FLANNEL_NETWORK=$POD_CIDR
-FLANNEL_SUBNET=$CURRENT_CIDR
-FLANNEL_MTU=1450
-FLANNEL_IPMASQ=true
-FLANNEL_IFACE=$CP_INTERFACE
-EOF
-    echo "Flannel subnet configuration created using CIDR: $CURRENT_CIDR"
-else
-    echo "No Pod CIDR assigned yet. Flannel will use the CIDR when Kubernetes assigns it."
-fi
-
 # Display status message
 echo "======================================================================"
 echo "Flannel CNI installed with node-specific interface configurations:"
@@ -406,8 +351,7 @@ for IFACE in "${!INTERFACES[@]}"; do
         NODE_NAME=$(get_node_property "$NODE_CONFIG" 0)
         NODE_INTERFACE=$(get_node_property "$NODE_CONFIG" 3)
         if [[ "$NODE_INTERFACE" == "$IFACE" ]]; then
-            NODE_POD_CIDR=$(get_node_property "$NODE_CONFIG" 2)
-            echo "  - $NODE_NAME (CIDR: $NODE_POD_CIDR)"
+            echo "  - $NODE_NAME"
         fi
     done
 done

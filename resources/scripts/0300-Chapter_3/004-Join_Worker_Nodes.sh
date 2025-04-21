@@ -249,3 +249,15 @@ kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addr
 echo ""
 echo "Note: It may take a few minutes for all nodes to become Ready"
 echo "======================================================================"
+
+# Update CoreDNS configuration to include new nodes in custom hosts
+echo "Updating CoreDNS configuration to include new nodes..."
+DNS_SETUP_SCRIPT="$(dirname "$SCRIPT_DIR")/0400-Chapter_4/002-DNS_Setup.sh"
+if [ -f "$DNS_SETUP_SCRIPT" ]; then
+    echo "Running DNS setup script to update CoreDNS configuration..."
+    bash "$DNS_SETUP_SCRIPT"
+    echo "CoreDNS configuration updated to include new nodes."
+else
+    echo "Warning: DNS setup script not found at $DNS_SETUP_SCRIPT"
+    echo "Please run the DNS setup script manually to update CoreDNS with new nodes."
+fi

@@ -285,6 +285,7 @@ if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" || "$I
     
     run_script "0300-Chapter_3/003-Initialize_the_Control_Plane_Node.sh" "Initializing Kubernetes control plane" "required"
     run_script "0400-Chapter_4/001-CNI_Setup.sh" "Setting up Flannel CNI networking" "required"
+    run_script "0400-Chapter_4/002-DNS_Setup.sh" "Setting up CoreDNS for multi-cloud configuration" "required"
     
     # If in all mode, join worker nodes from control plane
     if [[ "$INSTALL_MODE" == "all" ]]; then
