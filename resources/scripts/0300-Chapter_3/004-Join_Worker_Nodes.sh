@@ -133,6 +133,10 @@ FLANNEL_IPMASQ=true
 FLANNEL_IFACE=${NODE_INTERFACE}
 EOL
 
+# Enable kubelet service to prevent warnings during kubeadm join
+echo "Enabling kubelet service..."
+systemctl enable kubelet.service
+
 # Restart containerd to pick up new CNI configuration
 echo "Restarting containerd service to apply CNI configuration..."
 systemctl restart containerd
@@ -391,6 +395,10 @@ FLANNEL_MTU=1450
 FLANNEL_IPMASQ=true
 FLANNEL_IFACE=${NODE_INTERFACE}
 EOL
+
+# Enable kubelet service to prevent warnings during kubeadm join
+echo "Enabling kubelet service..."
+systemctl enable kubelet.service
 
 # Restart containerd to pick up new CNI configuration
 echo "Restarting containerd service to apply CNI configuration..."

@@ -176,6 +176,11 @@ EOF
 
 # Initialize the Kubernetes control plane
 echo "Initializing Kubernetes control plane..."
+
+# Ensure kubelet is enabled before initialization
+echo "Enabling kubelet service..."
+systemctl enable kubelet.service
+
 kubeadm init --config=/tmp/kubeadm-config.yaml --upload-certs --v=5 | tee /tmp/kubeadm-init.log
 
 # Set up kubeconfig for the root user

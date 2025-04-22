@@ -169,9 +169,50 @@ run_script() {
         echo "Script $script completed successfully."
     fi
     
+    # Special verification for specific scripts
+    if [[ "$script" == "0600-Chapter_6-Storage_Configuration/001-Configure_Default_local-storage.sh" ]]; then
+        verify_local_storage_configuration
+    fi
+    
     echo ""
     if [[ "$AUTO_MODE" != "true" ]]; then
         read -p "Press Enter to continue..."
+    fi
+}
+
+# Function to verify local storage configuration
+verify_local_storage_configuration() {
+    echo "Verifying local storage configuration..."
+    
+    # Check if we have kubectl available (control plane node)
+    if command -v kubectl &> /dev/null; then
+        # Check if the local-storage StorageClass exists
+        if kubectl get storageclass local-storage &> /dev/null; then
+            echo "✅ Local storage configuration verified: StorageClass 'local-storage' exists"
+            
+            # Check if PersistentVolumes were created
+            local pv_count=$(kubectl get pv --selector=storage.kubernetes.io/local-volume -o name | wc -l)
+            if [ "$pv_count" -gt 0 ]; then
+                echo "✅ Found $pv_count local PersistentVolumes configured"
+            else
+                echo "⚠️ No local PersistentVolumes found. This might be expected if no volumes were configured."
+            fi
+            
+            # Check if the local-path-provisioner deployment exists (if using that approach)
+            if kubectl get deployment -n kube-system local-path-provisioner &> /dev/null; then
+                echo "✅ Local Path Provisioner is deployed and running"
+                
+                # Check if pods are running
+                local pod_status=$(kubectl get pods -n kube-system -l app=local-path-provisioner -o jsonpath='{.items[0].status.phase}')
+                echo "   Pod status: $pod_status"
+            fi
+        else
+            echo "❌ Local storage configuration could not be verified: StorageClass 'local-storage' not found"
+            echo "   If you skipped the storage configuration or it failed, this is expected."
+        fi
+    else
+        echo "ℹ️ Cannot verify local storage configuration on this node: kubectl not available"
+        echo "   Please check on the control plane node with: kubectl get storageclass local-storage"
     fi
 }
 
@@ -296,23 +337,37 @@ if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" || "$I
     echo "Installing Control Plane Components"
     
     run_script "0300-Chapter_3/003-Initialize_the_Control_Plane_Node.sh" "Initializing Kubernetes control plane" "required"
-    run_script "0400-Chapter_4/001-CNI_Setup.sh" "Setting up Flannel CNI networking" "required"
+    
+    # Ask if user wants to setup CNI with Flannel
+    CNI_SKIPPED=false
+    if run_script "0400-Chapter_4/001-CNI_Setup.sh" "Setting up Flannel CNI networking" "optional"; then 
+        # If we get here, the script either completed successfully or was skipped
+        if [[ "$REPLY" =~ ^[Ss]$ ]]; then
+            CNI_SKIPPED=true
+            echo "CNI setup was skipped. Network plugins will need to be installed manually."
+        fi
+    else
+        CNI_SKIPPED=true
+        echo "CNI setup failed. Network plugins will need to be fixed manually."
+    fi
     
     # If in all mode, join worker nodes from control plane
     if [[ "$INSTALL_MODE" == "all" ]]; then
         # Print a note about automatic Pod CIDR assignment
         echo "Note: Worker nodes will join with automatic Pod CIDR assignment"
         
-        # Apply CNI fixes before joining worker nodes to ensure networking is ready
-        echo "======================================================================"
-        echo "Applying pre-join CNI fixes to ensure proper network initialization..."
-        echo "======================================================================"
-        
-        # Create the /etc/cni/net.d directory if it doesn't exist
-        mkdir -p /etc/cni/net.d
-        
-        # Create the flannel CNI configuration directly
-        cat > /etc/cni/net.d/10-flannel.conflist << EOF
+        # Only apply CNI fixes if CNI wasn't skipped
+        JOIN_WORKER_SKIPPED=false
+        if [[ "$CNI_SKIPPED" == "false" ]]; then
+            echo "======================================================================"
+            echo "Applying pre-join CNI fixes to ensure proper network initialization..."
+            echo "======================================================================"
+            
+            # Create the /etc/cni/net.d directory if it doesn't exist
+            mkdir -p /etc/cni/net.d
+            
+            # Create the flannel CNI configuration directly
+            cat > /etc/cni/net.d/10-flannel.conflist << EOF
 {
   "name": "cbr0",
   "cniVersion": "0.3.1",
@@ -333,61 +388,79 @@ if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" || "$I
   ]
 }
 EOF
-        
-        # Create /run/flannel directory if it doesn't exist
-        mkdir -p /run/flannel
-        
-        # Create subnet.env file with appropriate configuration
-        # Extract the POD_CIDR prefix from environment config
-        POD_CIDR_PREFIX=$(echo "$POD_CIDR" | cut -d '.' -f 1-2)
-        NODE_INTERFACE=$(get_current_node_property "interface")
-        HOSTNAME=$(get_current_hostname)
-        
-        # Get node CIDR or default to a value based on hostname number
-        NODE_CIDR=$(kubectl get node $HOSTNAME -o jsonpath='{.spec.podCIDR}' 2>/dev/null)
-        if [ -z "$NODE_CIDR" ]; then
-            NODE_NUM=$(echo "$HOSTNAME" | grep -oE '[0-9]+$' || echo "0")
-            NODE_CIDR="${POD_CIDR_PREFIX}.${NODE_NUM}.0/24"
-        fi
-        
-        # Create the subnet.env file
-        cat > /run/flannel/subnet.env << EOF
+            
+            # Create /run/flannel directory if it doesn't exist
+            mkdir -p /run/flannel
+            
+            # Create subnet.env file with appropriate configuration
+            # Extract the POD_CIDR prefix from environment config
+            POD_CIDR_PREFIX=$(echo "$POD_CIDR" | cut -d '.' -f 1-2)
+            NODE_INTERFACE=$(get_current_node_property "interface")
+            HOSTNAME=$(get_current_hostname)
+            
+            # Get node CIDR or default to a value based on hostname number
+            NODE_CIDR=$(kubectl get node $HOSTNAME -o jsonpath='{.spec.podCIDR}' 2>/dev/null)
+            if [ -z "$NODE_CIDR" ]; then
+                NODE_NUM=$(echo "$HOSTNAME" | grep -oE '[0-9]+$' || echo "0")
+                NODE_CIDR="${POD_CIDR_PREFIX}.${NODE_NUM}.0/24"
+            fi
+            
+            # Create the subnet.env file
+            cat > /run/flannel/subnet.env << EOF
 FLANNEL_NETWORK=${POD_CIDR}
 FLANNEL_SUBNET=${NODE_CIDR}
 FLANNEL_MTU=1450
 FLANNEL_IPMASQ=true
 FLANNEL_IFACE=${NODE_INTERFACE}
 EOF
-        
-        # Restart containerd and kubelet to pick up the new CNI configuration
-        systemctl restart containerd
-        sleep 3
-        systemctl restart kubelet
-        sleep 5
-        
-        echo "CNI fixes applied. Proceeding with worker node join..."
-        
-        # Join worker nodes now that CNI is prepared
-        run_script "0300-Chapter_3/004-Join_Worker_Nodes.sh" "Joining worker nodes to the cluster" "optional"
-        
-        # Ensure CNI is fully functional before DNS setup
-        echo "Ensuring CNI is properly initialized across all nodes before continuing..."
-        
-        # Check if we need to run a detailed troubleshooting step
-        NODE_STATUSES=$(kubectl get nodes --no-headers | grep -v "Ready")
-        if [[ -n "$NODE_STATUSES" ]]; then
-            echo "Some nodes are not in Ready state. Running CNI troubleshooting..."
-            run_script "0400-Chapter_4/003-CNI_Troubleshooting.sh" "Troubleshooting and fixing CNI issues" "optional"
             
-            # Wait a bit for any fixes to take effect
-            echo "Waiting for CNI fixes to propagate..."
-            sleep 30
+            # Restart containerd and kubelet to pick up the new CNI configuration
+            systemctl restart containerd
+            sleep 3
+            systemctl restart kubelet
+            sleep 5
+            
+            echo "CNI fixes applied. Proceeding with worker node join..."
+        else
+            echo "Skipping CNI fixes as Flannel CNI setup was skipped."
         fi
         
-        # Configure DNS after CNI is working
-        run_script "0400-Chapter_4/002-DNS_Setup.sh" "Setting up CoreDNS for multi-cloud configuration" "required"
+        # Ask to join worker nodes 
+        if run_script "0300-Chapter_3/004-Join_Worker_Nodes.sh" "Joining worker nodes to the cluster" "optional"; then
+            # If we get here, the script either completed successfully or was skipped
+            if [[ "$REPLY" =~ ^[Ss]$ ]]; then
+                JOIN_WORKER_SKIPPED=true
+                echo "Worker node joining was skipped."
+            fi
+        else
+            JOIN_WORKER_SKIPPED=true
+            echo "Worker node joining failed."
+        fi
         
-        # Add local storage configuration last, after networking is set up
+        # Only check CNI initialization if Flannel wasn't skipped and workers were joined
+        if [[ "$CNI_SKIPPED" == "false" && "$JOIN_WORKER_SKIPPED" == "false" ]]; then
+            echo "Ensuring CNI is properly initialized across all nodes before continuing..."
+            
+            # Check if we need to run a detailed troubleshooting step
+            NODE_STATUSES=$(kubectl get nodes --no-headers | grep -v "Ready" 2>/dev/null)
+            if [[ -n "$NODE_STATUSES" ]]; then
+                echo "Some nodes are not in Ready state. Running CNI troubleshooting..."
+                run_script "0400-Chapter_4/003-CNI_Troubleshooting.sh" "Troubleshooting and fixing CNI issues" "optional"
+                
+                # Wait a bit for any fixes to take effect
+                echo "Waiting for CNI fixes to propagate..."
+                sleep 30
+            fi
+        else
+            echo "Skipping CNI initialization check as either Flannel or worker joining was skipped."
+        fi
+        
+        # Configure DNS for the cluster
+        echo "Configuring DNS for the cluster..."
+        run_script "0400-Chapter_4/002-DNS_Setup.sh" "Setting up CoreDNS for multi-cloud configuration" "required"
+
+        # Configure local storage for all nodes
+        echo "Setting up local storage configuration..."
         run_script "0600-Chapter_6-Storage_Configuration/001-Configure_Default_local-storage.sh" "Setting up default local storage on all nodes" "optional"
     fi
     
