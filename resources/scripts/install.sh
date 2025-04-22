@@ -23,14 +23,26 @@
 set -e
 
 # Script base directory
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Import version information
-source "${SCRIPT_DIR}/0000-Version_Info.sh" > /dev/null 2>&1 || {
-    echo "Error: Version information script not found"
-    echo "Please ensure you're running this script from the correct directory"
-    exit 1
-}
+# Extract version information from install.md
+if [ -f "${SCRIPT_DIR}/install.md" ]; then
+    SCRIPT_VERSION=$(grep -A 10 "Script Version Details" "${SCRIPT_DIR}/install.md" | grep -i "Version:" | head -n 1 | sed -E 's/.*\*\*Version:\*\* ([0-9]+\.[0-9]+\.[0-9]+).*/\1/' | xargs)
+    LAST_UPDATED=$(grep -A 10 "Script Version Details" "${SCRIPT_DIR}/install.md" | grep -i "Last Updated:" | head -n 1 | sed -E 's/.*\*\*Last Updated:\*\* ([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/' | xargs)
+    COMPATIBLE_K8S=$(grep -A 10 "Script Version Details" "${SCRIPT_DIR}/install.md" | grep -i "Compatible With:" | head -n 1 | sed -E 's/.*\*\*Compatible With:\*\* (Kubernetes v[0-9]+\.[0-9]+\.[0-9]+).*/\1/' | xargs)
+    
+    if [ -z "$SCRIPT_VERSION" ]; then
+        SCRIPT_VERSION="1.0.0"  # Default version if not found
+    fi
+else
+    echo "Warning: install.md not found, using default version"
+    SCRIPT_VERSION="1.0.0"  # Default version
+    LAST_UPDATED="Unknown"
+    COMPATIBLE_K8S="Unknown"
+fi
+
+# Show version information
+echo "Script version: $SCRIPT_VERSION (Updated: $LAST_UPDATED, Compatible with: $COMPATIBLE_K8S)"
 
 # Parse arguments
 AUTO_MODE=false

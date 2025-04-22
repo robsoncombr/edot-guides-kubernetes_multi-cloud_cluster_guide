@@ -450,8 +450,8 @@ if [ $DNS_TEST_RESULT -lt 3 ]; then
     
     # Try checking if external DNS works directly
     echo "Testing if external DNS is reachable:"
-    kubectl exec -i dns-test -- ping -c 2 8.8.8.8 || echo "Cannot ping Google DNS (8.8.8.8)"
     kubectl exec -i dns-test -- ping -c 2 1.1.1.1 || echo "Cannot ping Cloudflare DNS (1.1.1.1)"
+    kubectl exec -i dns-test -- ping -c 2 8.8.8.8 || echo "Cannot ping Google DNS (8.8.8.8)"
     
     # Test if host networking works better for DNS
     echo "Creating a test pod with host network to check DNS access:"
@@ -541,7 +541,7 @@ data:
             fallthrough in-addr.arpa ip6.arpa
         }
         prometheus :9153
-        forward . 8.8.8.8 1.1.1.1 {
+        forward . 1.1.1.1 8.8.8.8 {
             prefer_udp
         }
         cache 30
