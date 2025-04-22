@@ -320,7 +320,7 @@ check_status "CoreDNS RBAC configuration"
 # ============================================================================
 
 # Step 1: Create CoreDNS ConfigMap with optimized configuration for multi-cloud
-echo "Creating CoreDNS ConfigMap..."
+echo "Creating CoreDNS ConfigMap with port adjustments to avoid conflicts with host DNS..."
 cat > $MANIFEST_DIR/coredns-configmap.yaml << EOF
 apiVersion: v1
 kind: ConfigMap
@@ -332,7 +332,7 @@ metadata:
     kubernetes.io/cluster-service: "true"
 data:
   Corefile: |
-    .:53 {
+    .:9053 {
         errors
         health {
             lameduck 5s
@@ -361,8 +361,8 @@ EOF
 kubectl apply -f $MANIFEST_DIR/coredns-configmap.yaml
 check_status "CoreDNS ConfigMap creation"
 
-# Step 2: Create CoreDNS service
-echo "Creating CoreDNS service..."
+# Step 2: Create CoreDNS service with port adjustments
+echo "Creating CoreDNS service with port adjustments..."
 
 # Get current cluster service CIDR from the API server configuration
 CLUSTER_SERVICE_CIDR=$(kubectl get cm -n kube-system kubeadm-config -o jsonpath='{.data.ClusterConfiguration}' 2>/dev/null | grep "serviceSubnet" | awk '{print $2}')
@@ -410,9 +410,11 @@ spec:
   ports:
   - name: dns
     port: 53
+    targetPort: 9053
     protocol: UDP
   - name: dns-tcp
     port: 53
+    targetPort: 9053
     protocol: TCP
   - name: metrics
     port: 9153
