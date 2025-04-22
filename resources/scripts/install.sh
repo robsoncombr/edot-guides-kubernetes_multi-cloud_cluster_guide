@@ -285,13 +285,98 @@ if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" || "$I
     
     run_script "0300-Chapter_3/003-Initialize_the_Control_Plane_Node.sh" "Initializing Kubernetes control plane" "required"
     run_script "0400-Chapter_4/001-CNI_Setup.sh" "Setting up Flannel CNI networking" "required"
-    run_script "0400-Chapter_4/002-DNS_Setup.sh" "Setting up CoreDNS for multi-cloud configuration" "required"
     
     # If in all mode, join worker nodes from control plane
     if [[ "$INSTALL_MODE" == "all" ]]; then
         # Print a note about automatic Pod CIDR assignment
         echo "Note: Worker nodes will join with automatic Pod CIDR assignment"
+        
+        # Apply CNI fixes before joining worker nodes to ensure networking is ready
+        echo "======================================================================"
+        echo "Applying pre-join CNI fixes to ensure proper network initialization..."
+        echo "======================================================================"
+        
+        # Create the /etc/cni/net.d directory if it doesn't exist
+        mkdir -p /etc/cni/net.d
+        
+        # Create the flannel CNI configuration directly
+        cat > /etc/cni/net.d/10-flannel.conflist << EOF
+{
+  "name": "cbr0",
+  "cniVersion": "0.3.1",
+  "plugins": [
+    {
+      "type": "flannel",
+      "delegate": {
+        "hairpinMode": true,
+        "isDefaultGateway": true
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {
+        "portMappings": true
+      }
+    }
+  ]
+}
+EOF
+        
+        # Create /run/flannel directory if it doesn't exist
+        mkdir -p /run/flannel
+        
+        # Create subnet.env file with appropriate configuration
+        # Extract the POD_CIDR prefix from environment config
+        POD_CIDR_PREFIX=$(echo "$POD_CIDR" | cut -d '.' -f 1-2)
+        NODE_INTERFACE=$(get_current_node_property "interface")
+        HOSTNAME=$(get_current_hostname)
+        
+        # Get node CIDR or default to a value based on hostname number
+        NODE_CIDR=$(kubectl get node $HOSTNAME -o jsonpath='{.spec.podCIDR}' 2>/dev/null)
+        if [ -z "$NODE_CIDR" ]; then
+            NODE_NUM=$(echo "$HOSTNAME" | grep -oE '[0-9]+$' || echo "0")
+            NODE_CIDR="${POD_CIDR_PREFIX}.${NODE_NUM}.0/24"
+        fi
+        
+        # Create the subnet.env file
+        cat > /run/flannel/subnet.env << EOF
+FLANNEL_NETWORK=${POD_CIDR}
+FLANNEL_SUBNET=${NODE_CIDR}
+FLANNEL_MTU=1450
+FLANNEL_IPMASQ=true
+FLANNEL_IFACE=${NODE_INTERFACE}
+EOF
+        
+        # Restart containerd and kubelet to pick up the new CNI configuration
+        systemctl restart containerd
+        sleep 3
+        systemctl restart kubelet
+        sleep 5
+        
+        echo "CNI fixes applied. Proceeding with worker node join..."
+        
+        # Join worker nodes now that CNI is prepared
         run_script "0300-Chapter_3/004-Join_Worker_Nodes.sh" "Joining worker nodes to the cluster" "optional"
+        
+        # Ensure CNI is fully functional before DNS setup
+        echo "Ensuring CNI is properly initialized across all nodes before continuing..."
+        
+        # Check if we need to run a detailed troubleshooting step
+        NODE_STATUSES=$(kubectl get nodes --no-headers | grep -v "Ready")
+        if [[ -n "$NODE_STATUSES" ]]; then
+            echo "Some nodes are not in Ready state. Running CNI troubleshooting..."
+            run_script "0400-Chapter_4/003-CNI_Troubleshooting.sh" "Troubleshooting and fixing CNI issues" "optional"
+            
+            # Wait a bit for any fixes to take effect
+            echo "Waiting for CNI fixes to propagate..."
+            sleep 30
+        fi
+        
+        # Configure DNS after CNI is working
+        run_script "0400-Chapter_4/002-DNS_Setup.sh" "Setting up CoreDNS for multi-cloud configuration" "required"
+        
+        # Add local storage configuration last, after networking is set up
+        run_script "0600-Chapter_6-Storage_Configuration/001-Configure_Default_local-storage.sh" "Setting up default local storage on all nodes" "optional"
     fi
     
     echo ""

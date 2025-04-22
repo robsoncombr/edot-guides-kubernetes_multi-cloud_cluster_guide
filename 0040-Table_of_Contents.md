@@ -51,6 +51,8 @@
 - Storage concepts in Kubernetes
 - Persistent Volumes and Persistent Volume Claims
 - Storage Solutions
+  - default local storage
+  - NFS as a shared storage solution
   - Rook+Ceph as the primary storage solution
   - OpenEBS as an alternative storage solution (for future documentation, once validated)
   - Longhorn as an alternative storage solution (for future documentation, once validated)

@@ -85,9 +85,6 @@ echo "Current CoreDNS image: $COREDNS_IMAGE"
 # ============================================================================
 echo "Removing existing CoreDNS resources for clean setup..."
 
-# Wait for any modifications in progress to complete
-sleep 5
-
 # Delete any existing CoreDNS resources in a specific order
 kubectl delete pods -n kube-system -l k8s-app=kube-dns --grace-period=0 --force --ignore-not-found=true
 kubectl delete deployment coredns -n kube-system --ignore-not-found=true
@@ -106,10 +103,10 @@ if ! kubectl -n kube-system get serviceaccount coredns > /dev/null 2>&1; then
 fi
 
 # ============================================================================
-# STEP 3: Set up CoreDNS components
+# STEP 3: Create CoreDNS configuration
 # ============================================================================
 
-# Step 1: Create CoreDNS ConfigMap with optimized configuration
+# Step 1: Create/update the CoreDNS ConfigMap
 echo "Creating CoreDNS ConfigMap..."
 cat > $MANIFEST_DIR/coredns-configmap.yaml << EOF
 apiVersion: v1
@@ -117,9 +114,6 @@ kind: ConfigMap
 metadata:
   name: coredns
   namespace: kube-system
-  labels:
-    k8s-app: kube-dns
-    kubernetes.io/cluster-service: "true"
 data:
   Corefile: |
     .:53 {
@@ -131,20 +125,13 @@ data:
         kubernetes cluster.local in-addr.arpa ip6.arpa {
             pods insecure
             fallthrough in-addr.arpa ip6.arpa
-            ttl 30
         }
         prometheus :9153
-        forward . 1.1.1.1 8.8.8.8 {
-            max_concurrent 1000
-            prefer_udp
-        }
+        forward . /etc/resolv.conf
         cache 30
         loop
         reload
         loadbalance
-        hosts {
-            fallthrough
-        }
     }
 EOF
 
@@ -160,12 +147,8 @@ kind: Service
 metadata:
   name: kube-dns
   namespace: kube-system
-  annotations:
-    prometheus.io/port: "9153"
-    prometheus.io/scrape: "true"
   labels:
     k8s-app: kube-dns
-    kubernetes.io/cluster-service: "true"
     kubernetes.io/name: "CoreDNS"
 spec:
   selector:
@@ -186,7 +169,7 @@ EOF
 kubectl apply -f $MANIFEST_DIR/coredns-service.yaml
 check_status "CoreDNS service creation"
 
-# Step 3: Create CoreDNS deployment with 3 replicas
+# Step 3: Create CoreDNS deployment
 echo "Creating CoreDNS deployment..."
 
 cat > $MANIFEST_DIR/coredns-deployment.yaml << EOF
@@ -197,7 +180,6 @@ metadata:
   namespace: kube-system
   labels:
     k8s-app: kube-dns
-    kubernetes.io/cluster-service: "true"
 spec:
   replicas: 3
   strategy:
@@ -215,27 +197,20 @@ spec:
       priorityClassName: system-cluster-critical
       serviceAccountName: coredns
       tolerations:
-      - key: "CriticalAddonsOnly"
-        operator: "Exists"
-      - key: "node-role.kubernetes.io/control-plane"
-        operator: "Exists"
-        effect: "NoSchedule"
-      - key: "node-role.kubernetes.io/master"
-        operator: "Exists"
-        effect: "NoSchedule"
-      - key: "node.kubernetes.io/not-ready"
-        operator: "Exists"
-        effect: "NoSchedule"
-      - key: "node.kubernetes.io/unreachable"
-        operator: "Exists"
-        effect: "NoSchedule"
-      topologySpreadConstraints:
-      - maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: DoNotSchedule
-        labelSelector:
-          matchLabels:
-            k8s-app: kube-dns
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+      nodeSelector:
+        kubernetes.io/os: linux
       containers:
       - name: coredns
         image: ${COREDNS_IMAGE}
@@ -250,7 +225,6 @@ spec:
         volumeMounts:
         - name: config-volume
           mountPath: /etc/coredns
-          readOnly: true
         ports:
         - containerPort: 53
           name: dns
@@ -261,14 +235,6 @@ spec:
         - containerPort: 9153
           name: metrics
           protocol: TCP
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            add:
-            - NET_BIND_SERVICE
-            drop:
-            - all
-          readOnlyRootFilesystem: true
         livenessProbe:
           httpGet:
             path: /health
@@ -283,11 +249,6 @@ spec:
             path: /ready
             port: 8181
             scheme: HTTP
-          initialDelaySeconds: 10
-          timeoutSeconds: 5
-          successThreshold: 1
-          failureThreshold: 3
-      dnsPolicy: Default
       volumes:
       - name: config-volume
         configMap:
@@ -295,54 +256,26 @@ spec:
           items:
           - key: Corefile
             path: Corefile
+      dnsPolicy: Default
 EOF
 
 kubectl apply -f $MANIFEST_DIR/coredns-deployment.yaml
 check_status "CoreDNS deployment creation"
 
 # ============================================================================
-# STEP 4: Verify DNS pod distribution and restart cluster DNS components if needed
+# STEP 4: Wait for CoreDNS pods to become ready
 # ============================================================================
 echo "Waiting for CoreDNS pods to become ready..."
-kubectl rollout status deployment/coredns -n kube-system --timeout=120s || true
+kubectl rollout status deployment/coredns -n kube-system --timeout=60s
 
-# If the rollout isn't successful after 120s, try some diagnostic fixes
-DNS_RUNNING_PODS=$(kubectl get pods -n kube-system -l k8s-app=kube-dns --field-selector=status.phase=Running --no-headers | wc -l)
-if [[ "$DNS_RUNNING_PODS" -lt 3 ]]; then
-    echo "⚠️ Not all CoreDNS pods are running (Only $DNS_RUNNING_PODS out of 3). Trying to recover..."
-    
-    # Check pod status for more information
-    kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
-    
-    # Get detailed information about any non-running pods
-    NON_RUNNING_PODS=$(kubectl get pods -n kube-system -l k8s-app=kube-dns --field-selector=status.phase!=Running -o name)
-    for POD in $NON_RUNNING_PODS; do
-        echo "Checking pod $POD status:"
-        kubectl describe $POD -n kube-system | grep -A 10 "Events:"
-    done
-    
-    # Try removing the topology constraints if pods aren't scheduling
-    echo "Removing topology spread constraints to allow better pod distribution..."
-    kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"remove", "path":"/spec/template/spec/topologySpreadConstraints"}]'
-    
-    # Add universal tolerations to ensure pods can schedule on any node
-    echo "Adding universal tolerations to ensure pods can schedule anywhere..."
-    kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add", "path":"/spec/template/spec/tolerations/-", "value":{"operator":"Exists"}}]'
-    
-    # Wait for recovery
-    echo "Waiting for CoreDNS pods to recover..."
-    kubectl rollout status deployment/coredns -n kube-system --timeout=60s || true
-fi
-
-# Show current CoreDNS pod status
+# Verify DNS pods are running
 echo "Current CoreDNS pod status:"
 kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
 
 # ============================================================================
-# STEP 5: Verify DNS functionality with rigorous testing
+# STEP 5: Test DNS resolution
 # ============================================================================
-
-# Test DNS resolution using a test pod
+# Create a test pod for DNS verification
 echo "Creating test pod for DNS verification..."
 cat > $MANIFEST_DIR/dns-test-pod.yaml << EOF
 apiVersion: v1
@@ -351,8 +284,6 @@ metadata:
   name: dns-test
   namespace: default
 spec:
-  tolerations:
-  - operator: "Exists"
   containers:
   - name: dns-test
     image: alpine:latest
@@ -379,23 +310,17 @@ for i in $(seq 1 15); do
     fi
     echo "Waiting for DNS test pod to start... ($i/15)"
     sleep 5
-    if [ $i -eq 15 ]; then
-        echo "⚠️ DNS test pod did not start in time, but will proceed with tests"
-    fi
 done
 
-# Run DNS resolution tests with a longer timeout
+# Run DNS resolution tests
 echo "Testing DNS resolution..."
-sleep 10  # Give the pod a moment to initialize its DNS settings
+sleep 10  # Give the pod a moment to initialize
 
 # Show the pod's DNS configuration
 echo "DNS test pod's resolv.conf:"
 kubectl exec -i dns-test -- cat /etc/resolv.conf || true
 
-# Install dig/nslookup tools in the pod if needed
-kubectl exec -i dns-test -- apk add --no-cache bind-tools || true
-
-# Test DNS functionality several times to ensure it's stable
+# Install test tools if needed
 echo "Running complete DNS resolution tests..."
 DNS_TEST_RESULT=0
 
@@ -408,9 +333,9 @@ else
     cat /tmp/dns-test1.log
 fi
 
-# Test cluster service resolution 
+# Test internal service
 if kubectl exec -i dns-test -- nslookup kube-dns.kube-system.svc.cluster.local > /tmp/dns-test2.log 2>&1; then
-    echo "✅ DNS test successful - able to resolve internal service (kube-dns.kube-system)"
+    echo "✅ DNS test successful - able to resolve internal service"
     DNS_TEST_RESULT=$((DNS_TEST_RESULT + 1))
 else
     echo "❌ DNS test failed - unable to resolve internal service"
@@ -434,204 +359,34 @@ else
     fi
 fi
 
-# If there are DNS failures, perform deeper troubleshooting
-if [ $DNS_TEST_RESULT -lt 3 ]; then
-    echo "==== ADVANCED DNS TROUBLESHOOTING ===="
-    
-    # Check if CoreDNS pods are actually handling DNS requests
-    echo "Checking if CoreDNS is responding to queries directly:"
-    
-    # Since package installation is unreliable, use what's available in the pod
-    echo "Testing DNS with built-in tools..."
-    
-    # Check if DNS service is reachable directly with ping
-    echo "Testing direct communication to kube-dns service (10.1.0.10):"
-    kubectl exec -i dns-test -- ping -c 2 10.1.0.10 || echo "Cannot ping DNS service IP"
-    
-    # Try checking if external DNS works directly
-    echo "Testing if external DNS is reachable:"
-    kubectl exec -i dns-test -- ping -c 2 8.8.8.8 || echo "Cannot ping Google DNS (8.8.8.8)"
-    kubectl exec -i dns-test -- ping -c 2 1.1.1.1 || echo "Cannot ping Cloudflare DNS (1.1.1.1)"
-    
-    # Test if host networking works better for DNS
-    echo "Creating a test pod with host network to check DNS access:"
-    cat > $MANIFEST_DIR/host-dns-test.yaml << EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: host-dns-test
-  namespace: default
-spec:
-  hostNetwork: true
-  tolerations:
-  - operator: "Exists"
-  containers:
-  - name: dns-test
-    image: busybox:latest
-    command:
-      - sleep
-      - "600"
-  terminationGracePeriodSeconds: 5
-EOF
-    
-    kubectl apply -f $MANIFEST_DIR/host-dns-test.yaml
-    
-    # Wait for the pod with host networking to be ready
-    for i in $(seq 1 10); do
-        if kubectl get pod host-dns-test | grep -q Running; then
-            echo "✅ Host network test pod is now running"
-            break
-        fi
-        echo "Waiting for host network test pod to start... ($i/10)"
-        sleep 3
-    done
-    
-    # Test DNS resolution from host network
-    echo "Testing DNS resolution from host network:"
-    kubectl exec -i host-dns-test -- cat /etc/resolv.conf
-    kubectl exec -i host-dns-test -- nslookup kubernetes.default || echo "Cannot resolve kubernetes.default from host network"
-    kubectl exec -i host-dns-test -- nslookup google.com || echo "Cannot resolve google.com from host network"
-    
-    # Check if there are any networking policies interfering
-    echo "Checking for NetworkPolicies that might affect DNS traffic:"
-    kubectl get networkpolicies --all-namespaces || echo "No NetworkPolicies found"
-    
-    # Check CoreDNS endpoints
-    echo "Checking CoreDNS service endpoints:"
-    kubectl get endpoints kube-dns -n kube-system -o yaml
-    
-    # Check kube-proxy status
-    echo "Checking kube-proxy status for DNS service IP handling:"
-    kubectl get pods -n kube-system -l k8s-app=kube-proxy -o wide
-    
-    # Attempt to fix common issues
-    echo "Attempting to fix common DNS issues..."
-    
-    # Restart kube-proxy to refresh DNS service routing
-    echo "Restarting kube-proxy pods to refresh iptables rules:"
-    kubectl delete pods -n kube-system -l k8s-app=kube-proxy
-    
-    # Wait for kube-proxy to restart
-    echo "Waiting for kube-proxy pods to restart..."
-    sleep 10
-    kubectl get pods -n kube-system -l k8s-app=kube-proxy
-    
-    # Modify CoreDNS configuration to use more reliable resolvers
-    echo "Updating CoreDNS configuration to use more reliable upstream resolvers..."
-    
-    # Update CoreDNS configmap with improved forward configuration
-    cat > $MANIFEST_DIR/improved-coredns-configmap.yaml << EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coredns
-  namespace: kube-system
-  labels:
-    k8s-app: kube-dns
-data:
-  Corefile: |
-    .:53 {
-        errors
-        health {
-            lameduck 5s
-        }
-        ready
-        kubernetes cluster.local in-addr.arpa ip6.arpa {
-            pods insecure
-            fallthrough in-addr.arpa ip6.arpa
-        }
-        prometheus :9153
-        forward . 8.8.8.8 1.1.1.1 {
-            prefer_udp
-        }
-        cache 30
-        loop
-        reload
-        loadbalance
-    }
-EOF
-    
-    kubectl apply -f $MANIFEST_DIR/improved-coredns-configmap.yaml
-    
-    # Restart CoreDNS with simplified configuration
-    echo "Restarting CoreDNS with optimized configuration..."
-    kubectl rollout restart deployment coredns -n kube-system
-    kubectl rollout status deployment coredns -n kube-system --timeout=60s
-    
-    # Create a test pod with a simple DNS policy
-    echo "Creating a clean test pod with basic configuration..."
-    kubectl delete pod dns-test --force --grace-period=0 --ignore-not-found=true
-    kubectl delete pod host-dns-test --force --grace-period=0 --ignore-not-found=true
-    
-    cat > $MANIFEST_DIR/final-dns-test.yaml << EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: dns-test
-  namespace: default
-spec:
-  containers:
-  - name: dns-test
-    image: busybox:latest
-    command:
-      - sleep
-      - "3600"
-EOF
-    
-    kubectl apply -f $MANIFEST_DIR/final-dns-test.yaml
-    
-    # Wait for the test pod to be running
-    echo "Waiting for final DNS test pod to be ready..."
-    for i in $(seq 1 10); do
-        if kubectl get pod dns-test | grep -q Running; then
-            echo "✅ Final DNS test pod is now running"
-            break
-        fi
-        echo "Waiting for DNS test pod to start... ($i/10)"
-        sleep 3
-    done
-    
-    # Final DNS test
-    echo "Performing final DNS test..."
-    sleep 5
-    
-    # Show the pod's DNS configuration
-    echo "DNS test pod's resolv.conf:"
-    kubectl exec -i dns-test -- cat /etc/resolv.conf || true
-    
-    # Try resolving kubernetes service again
-    if kubectl exec -i dns-test -- nslookup kubernetes.default; then
-        echo "✅ DNS resolution NOW WORKING with new configuration"
-    else
-        echo "❌ DNS resolution STILL FAILING after configuration updates"
-        
-        echo "Final emergency fix - patching CoreDNS deployment to use host network:"
-        kubectl patch deployment coredns -n kube-system --type=strategic-merge -p='{"spec":{"template":{"spec":{"hostNetwork":true}}}}'
-        sleep 15
-        
-        echo "Testing one more time with CoreDNS on host network:"
-        kubectl exec -i dns-test -- nslookup kubernetes.default || echo "Still failing after host network change"
-    fi
-    
-    # Clean up test pods
-    kubectl delete pod host-dns-test --force --grace-period=0 --ignore-not-found=true
+# Check CoreDNS pod logs for more information
+echo "Checking CoreDNS pod logs for more information:"
+FIRST_DNS_POD=$(kubectl get pods -n kube-system -l k8s-app=kube-dns -o name | head -1)
+if [ ! -z "$FIRST_DNS_POD" ]; then
+    kubectl logs -n kube-system $FIRST_DNS_POD | tail -10
 fi
 
-# Show resolv.conf of a node for comparison
+# Check CoreDNS endpoints
+echo "Checking CoreDNS service endpoints:"
+kubectl get endpoints kube-dns -n kube-system -o yaml
+
+# Check kube-proxy status
+echo "Checking kube-proxy status for DNS service IP handling:"
+kubectl get pods -n kube-system -l k8s-app=kube-proxy -o wide
+
+# Check host DNS configuration for reference
 echo "Checking host DNS configuration for reference:"
 cat /etc/resolv.conf | grep -v '^#'
 
-# Clean up test pod and temporary files
+# Clean up test resources
 echo "Cleaning up test resources..."
 kubectl delete pod dns-test --force --grace-period=0 --ignore-not-found=true
-rm -rf $MANIFEST_DIR
-rm -f /tmp/dns-test*.log
 
 echo "======================================================================"
 echo "CoreDNS setup complete! Current status:"
 kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
 echo ""
-kubectl get service -n kube-system -l k8s-app=kube-dns
+kubectl get service -n kube-system kube-dns
 echo ""
 
 echo "Node status after DNS setup:"
@@ -640,10 +395,6 @@ echo ""
 
 if [ $DNS_TEST_RESULT -ge 2 ]; then
     echo "✅ CoreDNS is now functioning correctly for basic DNS resolution!"
-    if [ $DNS_TEST_RESULT -lt 3 ]; then
-        echo "⚠️ Internal DNS works but external DNS resolution had issues."
-        echo "   This may indicate network connectivity problems to external DNS servers."
-    fi
 else
     echo "⚠️ CoreDNS setup completed but DNS tests failed. Further debugging may be needed."
     echo ""

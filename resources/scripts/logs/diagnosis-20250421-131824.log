@@ -1,0 +1,77 @@
+[2025-04-21 13:18:03] [INFO] Starting diagnostic mode: basic
+[2025-04-21 13:18:03] [INFO] SECTION: BASIC DIAGNOSTICS
+[2025-04-21 13:18:03] [WARNING] Missing required tools: strace
+[2025-04-21 13:18:03] [INFO] Installing missing tools...
+[2025-04-21 13:18:08] [SUCCESS] All required diagnostic tools are available
+[2025-04-21 13:18:08] [INFO] SECTION: NODE CONNECTIVITY
+[2025-04-21 13:18:08] [INFO] Checking connectivity to all cluster nodes...
+[2025-04-21 13:18:08] [INFO] Checking connectivity to k8s-01-oci-01 (172.16.0.1)...
+[2025-04-21 13:18:10] [SUCCESS] Ping to k8s-01-oci-01 (172.16.0.1) successful
+[2025-04-21 13:18:10] [SUCCESS] SSH to k8s-01-oci-01 (172.16.0.1) successful
+[2025-04-21 13:18:10] [INFO] Checking connectivity to k8s-02-oci-02 (172.16.0.2)...
+[2025-04-21 13:18:12] [SUCCESS] Ping to k8s-02-oci-02 (172.16.0.2) successful
+[2025-04-21 13:18:13] [SUCCESS] SSH to k8s-02-oci-02 (172.16.0.2) successful
+[2025-04-21 13:18:13] [INFO] Checking connectivity to k8s-03-htg-01 (172.16.0.3)...
+[2025-04-21 13:18:15] [SUCCESS] Ping to k8s-03-htg-01 (172.16.0.3) successful
+[2025-04-21 13:18:18] [SUCCESS] SSH to k8s-03-htg-01 (172.16.0.3) successful
+[2025-04-21 13:18:18] [SUCCESS] ✅ Node Connectivity: PASS
+[2025-04-21 13:18:18] [INFO] SECTION: KUBERNETES COMPONENT STATUS
+[2025-04-21 13:18:18] [INFO] Checking status of Kubernetes components...
+[2025-04-21 13:18:18] [SUCCESS] Kubernetes API is accessible
+[2025-04-21 13:18:18] [INFO] Checking control plane pods...
+[2025-04-21 13:18:18] [SUCCESS] Control plane component kube-apiserver is running
+[2025-04-21 13:18:19] [SUCCESS] Control plane component kube-controller-manager is running
+[2025-04-21 13:18:19] [SUCCESS] Control plane component kube-scheduler is running
+[2025-04-21 13:18:19] [SUCCESS] Control plane component etcd is running
+[2025-04-21 13:18:19] [INFO] Checking CoreDNS and kube-proxy...
+[2025-04-21 13:18:19] [ERROR] Addon component coredns is not running properly (status: )
+[2025-04-21 13:18:19] [SUCCESS] Addon component kube-proxy is running
+[2025-04-21 13:18:19] [INFO] Checking CNI (Flannel)...
+[2025-04-21 13:18:19] [SUCCESS] CNI pods are running
+[2025-04-21 13:18:19] [ERROR] ❌ Kubernetes Components: FAIL - Issues with components: coredns:
+[2025-04-21 13:18:19] [INFO] SECTION: KUBERNETES NODE STATUS
+[2025-04-21 13:18:19] [INFO] Checking status of Kubernetes nodes...
+[2025-04-21 13:18:19] [INFO] Cluster has 3 nodes
+[2025-04-21 13:18:19] [INFO] Checking node resource allocation...
+[2025-04-21 13:18:19] [INFO] Node k8s-01-oci-01: CPU 2/2, Memory 8008624Ki/8111024Ki
+[2025-04-21 13:18:19] [INFO] Node k8s-02-oci-02: CPU 2/2, Memory 15207352Ki/15309752Ki
+[2025-04-21 13:18:19] [INFO] Node k8s-03-htg-01: CPU 8/8, Memory 32762808Ki/32865208Ki
+[2025-04-21 13:18:19] [ERROR] ❌ Node Status: FAIL - Node issues: NotReady:k8s-01-oci-01 k8s-02-oci-02 k8s-03-htg-01
+[2025-04-21 13:18:19] [INFO] SECTION: SYSTEM RESOURCES
+[2025-04-21 13:18:19] [INFO] Checking system resources on all cluster nodes...
+[2025-04-21 13:18:19] [INFO] Checking system resources on k8s-01-oci-01 (172.16.0.1)...
+[2025-04-21 13:18:19] [INFO] Executing on 172.16.0.1: top -bn1 | grep '%Cpu' | awk '{print $2+$4}'
+[2025-04-21 13:18:20] [SUCCESS] CPU usage on k8s-01-oci-01: 4.8%
+[2025-04-21 13:18:20] [INFO] Executing on 172.16.0.1: free | grep Mem | awk '{print $3/$2 * 100.0}'
+[2025-04-21 13:18:20] [SUCCESS] Memory usage on k8s-01-oci-01: 22.2313%
+[2025-04-21 13:18:20] [INFO] Executing on 172.16.0.1: df -h / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:20] [SUCCESS] Disk usage on k8s-01-oci-01: 14%
+[2025-04-21 13:18:20] [INFO] Executing on 172.16.0.1: df -i / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:20] [SUCCESS] Inode usage on k8s-01-oci-01: 3%
+[2025-04-21 13:18:20] [INFO] Executing on 172.16.0.1: ps aux | wc -l
+[2025-04-21 13:18:20] [SUCCESS] Process count on k8s-01-oci-01: 210 processes
+[2025-04-21 13:18:20] [INFO] Checking system resources on k8s-02-oci-02 (172.16.0.2)...
+[2025-04-21 13:18:20] [INFO] Executing on 172.16.0.2: top -bn1 | grep '%Cpu' | awk '{print $2+$4}'
+[2025-04-21 13:18:21] [SUCCESS] CPU usage on k8s-02-oci-02: 4.5%
+[2025-04-21 13:18:21] [INFO] Executing on 172.16.0.2: free | grep Mem | awk '{print $3/$2 * 100.0}'
+[2025-04-21 13:18:21] [SUCCESS] Memory usage on k8s-02-oci-02: 3.61553%
+[2025-04-21 13:18:21] [INFO] Executing on 172.16.0.2: df -h / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:21] [SUCCESS] Disk usage on k8s-02-oci-02: 20%
+[2025-04-21 13:18:21] [INFO] Executing on 172.16.0.2: df -i / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:22] [SUCCESS] Inode usage on k8s-02-oci-02: 3%
+[2025-04-21 13:18:22] [INFO] Executing on 172.16.0.2: ps aux | wc -l
+[2025-04-21 13:18:22] [SUCCESS] Process count on k8s-02-oci-02: 180 processes
+[2025-04-21 13:18:22] [INFO] Checking system resources on k8s-03-htg-01 (172.16.0.3)...
+[2025-04-21 13:18:22] [INFO] Executing on 172.16.0.3: top -bn1 | grep '%Cpu' | awk '{print $2+$4}'
+[2025-04-21 13:18:22] [SUCCESS] CPU usage on k8s-03-htg-01: 5.5%
+[2025-04-21 13:18:22] [INFO] Executing on 172.16.0.3: free | grep Mem | awk '{print $3/$2 * 100.0}'
+[2025-04-21 13:18:23] [SUCCESS] Memory usage on k8s-03-htg-01: 2.51027%
+[2025-04-21 13:18:23] [INFO] Executing on 172.16.0.3: df -h / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:23] [SUCCESS] Disk usage on k8s-03-htg-01: 10%
+[2025-04-21 13:18:23] [INFO] Executing on 172.16.0.3: df -i / | awk 'NR==2 {print $5}' | sed 's/%//'
+[2025-04-21 13:18:23] [SUCCESS] Inode usage on k8s-03-htg-01: 1%
+[2025-04-21 13:18:23] [INFO] Executing on 172.16.0.3: ps aux | wc -l
+[2025-04-21 13:18:24] [SUCCESS] Process count on k8s-03-htg-01: 189 processes
+[2025-04-21 13:18:24] [SUCCESS] ✅ System Resources: PASS
+[2025-04-21 13:18:24] [INFO] Basic diagnostics completed
+[2025-04-21 13:18:24] [INFO] SECTION: DIAGNOSTIC SUMMARY

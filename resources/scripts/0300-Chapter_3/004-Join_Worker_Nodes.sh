@@ -66,6 +66,9 @@ fi
 
 echo "Join command: $JOIN_CMD"
 
+# Extract the POD_CIDR prefix (e.g., 10.10 from 10.10.0.0/16)
+POD_CIDR_PREFIX=$(echo "$POD_CIDR" | cut -d '.' -f 1-2)
+
 # Create node join and setup script template
 echo "Creating node join and network setup script template..."
 cat > /tmp/join_template.sh << 'EOF'
@@ -82,6 +85,35 @@ JOIN_CMD="__JOIN_CMD__"
 echo "======================================================================"
 echo "Joining worker node ${NODE_NAME} to Kubernetes cluster"
 echo "======================================================================"
+
+# Prepare the CNI directories and configuration BEFORE joining
+echo "Preparing CNI configuration for ${NODE_NAME}..."
+mkdir -p /etc/cni/net.d
+mkdir -p /opt/cni/bin
+mkdir -p /run/flannel
+
+# Create CNI configuration file
+cat > /etc/cni/net.d/10-flannel.conflist << 'EOFCNI'
+{
+  "name": "cbr0",
+  "cniVersion": "0.3.1",
+  "plugins": [
+    {
+      "type": "flannel",
+      "delegate": {
+        "hairpinMode": true,
+        "isDefaultGateway": true
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {
+        "portMappings": true
+      }
+    }
+  ]
+}
+EOFCNI
 
 # Configure kubelet to use the correct node IP
 echo "Setting kubelet node IP configuration..."
@@ -100,6 +132,11 @@ FLANNEL_MTU=1450
 FLANNEL_IPMASQ=true
 FLANNEL_IFACE=${NODE_INTERFACE}
 EOL
+
+# Restart containerd to pick up new CNI configuration
+echo "Restarting containerd service to apply CNI configuration..."
+systemctl restart containerd
+sleep 3
 
 # Execute join command
 echo "Executing join command: ${JOIN_CMD}"
@@ -250,7 +287,7 @@ echo ""
 echo "Note: It may take a few minutes for all nodes to become Ready"
 echo "======================================================================"
 
-# Update CoreDNS configuration to include new nodes in custom hosts
+# Update CoreDNS configuration to include new nodes
 echo "Updating CoreDNS configuration to include new nodes..."
 DNS_SETUP_SCRIPT="$(dirname "$SCRIPT_DIR")/0400-Chapter_4/002-DNS_Setup.sh"
 if [ -f "$DNS_SETUP_SCRIPT" ]; then
@@ -261,3 +298,187 @@ else
     echo "Warning: DNS setup script not found at $DNS_SETUP_SCRIPT"
     echo "Please run the DNS setup script manually to update CoreDNS with new nodes."
 fi
+
+# Function to join a new worker node in the future
+function join_new_worker_node() {
+    if [ "$#" -lt 3 ]; then
+        echo "Usage: join_new_worker_node <node_hostname> <node_ip> <node_interface>"
+        echo "Example: join_new_worker_node k8s-04-aws-01 172.16.0.4 ens5"
+        return 1
+    fi
+    
+    NEW_NODE_NAME=$1
+    NEW_NODE_IP=$2
+    NEW_NODE_INTERFACE=$3
+    
+    echo "Preparing to join new worker node: $NEW_NODE_NAME ($NEW_NODE_IP) using interface $NEW_NODE_INTERFACE"
+    
+    # Generate node number for CIDR assignment
+    NODE_NUM=$(echo "$NEW_NODE_NAME" | grep -oE '[0-9]+$' || echo "0")
+    NEW_NODE_CIDR="${POD_CIDR_PREFIX}.${NODE_NUM}.0/24"
+    
+    # Get fresh join command
+    JOIN_CMD=$(kubeadm token create --print-join-command)
+    if [ -z "$JOIN_CMD" ]; then
+        echo "Error: Could not generate a valid join command"
+        return 1
+    fi
+    
+    # Create join script for the new node
+    JOIN_SCRIPT="/tmp/join_${NEW_NODE_NAME}.sh"
+    cp /tmp/join_template.sh "$JOIN_SCRIPT" 2>/dev/null
+    
+    # If template doesn't exist, recreate it
+    if [ $? -ne 0 ]; then
+        cat > /tmp/join_template.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Environment variables will be replaced dynamically
+NODE_NAME="__NODE_NAME__"
+NODE_IP="__NODE_IP__"
+NODE_POD_CIDR="__NODE_POD_CIDR__"
+NODE_INTERFACE="__NODE_INTERFACE__"
+JOIN_CMD="__JOIN_CMD__"
+
+echo "======================================================================"
+echo "Joining worker node ${NODE_NAME} to Kubernetes cluster"
+echo "======================================================================"
+
+# Prepare the CNI directories and configuration BEFORE joining
+echo "Preparing CNI configuration for ${NODE_NAME}..."
+mkdir -p /etc/cni/net.d
+mkdir -p /opt/cni/bin
+mkdir -p /run/flannel
+
+# Create CNI configuration file
+cat > /etc/cni/net.d/10-flannel.conflist << 'EOFCNI'
+{
+  "name": "cbr0",
+  "cniVersion": "0.3.1",
+  "plugins": [
+    {
+      "type": "flannel",
+      "delegate": {
+        "hairpinMode": true,
+        "isDefaultGateway": true
+      }
+    },
+    {
+      "type": "portmap",
+      "capabilities": {
+        "portMappings": true
+      }
+    }
+  ]
+}
+EOFCNI
+
+# Configure kubelet to use the correct node IP
+echo "Setting kubelet node IP configuration..."
+mkdir -p /etc/default
+cat > /etc/default/kubelet << EOL
+KUBELET_EXTRA_ARGS="--node-ip=${NODE_IP} --cluster-dns=__DNS_SERVICE_IP__"
+EOL
+
+# Set up proper Flannel subnet configuration BEFORE joining
+echo "Configuring Flannel subnet for ${NODE_NAME} with CIDR ${NODE_POD_CIDR}..."
+mkdir -p /run/flannel
+cat > /run/flannel/subnet.env << EOL
+FLANNEL_NETWORK=__POD_CIDR__
+FLANNEL_SUBNET=${NODE_POD_CIDR}
+FLANNEL_MTU=1450
+FLANNEL_IPMASQ=true
+FLANNEL_IFACE=${NODE_INTERFACE}
+EOL
+
+# Restart containerd to pick up new CNI configuration
+echo "Restarting containerd service to apply CNI configuration..."
+systemctl restart containerd
+sleep 3
+
+# Execute join command
+echo "Executing join command: ${JOIN_CMD}"
+${JOIN_CMD}
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to join the cluster. Please check the join command and try again."
+    exit 1
+fi
+
+# Restart kubelet to ensure all configurations are applied
+echo "Restarting kubelet service..."
+systemctl restart kubelet
+
+echo "======================================================================"
+echo "Worker node ${NODE_NAME} joined and network configured successfully!"
+echo "Node IP: ${NODE_IP}"
+echo "Pod CIDR: ${NODE_POD_CIDR}"
+echo "Network Interface: ${NODE_INTERFACE}"
+echo ""
+echo "Note: It may take a minute for the node to become Ready"
+echo "======================================================================"
+EOF
+        cp /tmp/join_template.sh "$JOIN_SCRIPT"
+    fi
+    
+    # Replace placeholder values with actual values
+    sed -i "s|__NODE_NAME__|${NEW_NODE_NAME}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_IP__|${NEW_NODE_IP}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_POD_CIDR__|${NEW_NODE_CIDR}|g" "$JOIN_SCRIPT"
+    sed -i "s|__NODE_INTERFACE__|${NEW_NODE_INTERFACE}|g" "$JOIN_SCRIPT"
+    sed -i "s|__JOIN_CMD__|${JOIN_CMD}|g" "$JOIN_SCRIPT"
+    sed -i "s|__POD_CIDR__|${POD_CIDR}|g" "$JOIN_SCRIPT"
+    sed -i "s|__DNS_SERVICE_IP__|${DNS_SERVICE_IP}|g" "$JOIN_SCRIPT"
+    
+    chmod +x "$JOIN_SCRIPT"
+    
+    # Copy and execute the join script on the worker node
+    echo "Copying and executing join script on ${NEW_NODE_NAME} (${NEW_NODE_IP})..."
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$JOIN_SCRIPT" "root@${NEW_NODE_IP}:/tmp/"; then
+        if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@${NEW_NODE_IP}" "bash /tmp/join_${NEW_NODE_NAME}.sh && rm -f /tmp/join_${NEW_NODE_NAME}.sh"; then
+            echo "New worker node ${NEW_NODE_NAME} joined successfully"
+            
+            # Wait for the node to appear in the cluster
+            echo "Waiting for node ${NEW_NODE_NAME} to appear in the cluster..."
+            ATTEMPTS=0
+            MAX_ATTEMPTS=30
+            while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+                if kubectl get node "${NEW_NODE_NAME}" &>/dev/null; then
+                    echo "Node ${NEW_NODE_NAME} detected in the cluster."
+                    break
+                fi
+                echo "Waiting for node ${NEW_NODE_NAME}... (${ATTEMPTS}/${MAX_ATTEMPTS})"
+                sleep 5
+                ATTEMPTS=$((ATTEMPTS+1))
+            done
+            
+            if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
+                echo "Warning: Node ${NEW_NODE_NAME} did not appear in the cluster after waiting"
+                return 1
+            else
+                echo "Node ${NEW_NODE_NAME} joined successfully!"
+                kubectl get nodes
+                return 0
+            fi
+        else
+            echo "Error: Failed to execute join script on ${NEW_NODE_NAME}"
+            return 1
+        fi
+    else
+        echo "Error: Failed to copy join script to ${NEW_NODE_NAME}"
+        return 1
+    fi
+}
+
+# Provide instructions for adding new nodes in the future
+echo "======================================================================"
+echo "To add a new worker node in the future, run:"
+echo "  cd $(dirname "$(readlink -f "$0")")"
+echo "  ./004-Join_Worker_Nodes.sh"
+echo "Or source this script and use the function directly:"
+echo "  source ./004-Join_Worker_Nodes.sh"
+echo "  join_new_worker_node <node_hostname> <node_ip> <node_interface>"
+echo "Example:"
+echo "  join_new_worker_node k8s-04-aws-01 172.16.0.4 ens5"
+echo "======================================================================"
