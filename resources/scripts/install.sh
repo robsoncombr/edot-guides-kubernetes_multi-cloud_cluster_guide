@@ -516,22 +516,3 @@ echo "If you encounter any issues, use the troubleshooting scripts:"
 echo "  ${SCRIPT_DIR}/1000-Troubleshooting/001-Fix_Common_Issues.sh"
 echo "  ${SCRIPT_DIR}/1000-Troubleshooting/002-Network_Connectivity_Test.sh"
 echo ""
-
-# Create directories if they don't exist
-mkdir -p "${SCRIPT_DIR}/1000-Troubleshooting" &>/dev/null
-
-# Offer to test networking if this is a control plane
-if [[ "$IS_CONTROL_PLANE" == "true" || "$INSTALL_MODE" == "control-plane" ]]; then
-    if [[ "$AUTO_MODE" != "true" ]]; then
-        read -p "Would you like to test cluster networking now? (y/n): " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            run_script "1000-Troubleshooting/002-Network_Connectivity_Test.sh" "Testing cluster networking" "optional"
-        fi
-    fi
-fi
-
-echo ""
-echo "Thank you for using the Kubernetes Multi-Cloud Cluster installer!"
-echo "Refer to the documentation for next steps and additional configurations."
-echo ""
