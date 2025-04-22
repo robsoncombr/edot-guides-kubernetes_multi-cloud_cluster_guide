@@ -23,4 +23,6 @@
 
 ### All dependencies are preferably to be Fully Open-Source and Free Commercially Licensed
 
+---
+
 ### Next - [Table of Contents](0040-Table_of_Contents.md)

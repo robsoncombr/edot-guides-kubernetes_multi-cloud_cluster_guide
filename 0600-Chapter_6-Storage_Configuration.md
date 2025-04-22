@@ -19,3 +19,7 @@
 ## 6.6 Cross-cloud Storage Solutions and Challenges
 
 ## 6.7 Data Backup and Recovery Strategies
+
+---
+
+**Next**: [Chapter 7: Advanced Cluster Configuration](0700-Chapter_7-Advanced_Cluster_Configuration.md)
