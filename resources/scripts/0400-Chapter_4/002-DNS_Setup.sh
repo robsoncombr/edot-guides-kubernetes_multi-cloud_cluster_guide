@@ -9,12 +9,16 @@
 #   cluster. It ensures CoreDNS pods are deployed correctly for DNS resolution
 #   across all nodes in the cluster.
 #
+#   The script now automatically detects and fixes common DNS issues without
+#   requiring separate fix scripts.
+#
 # USAGE:
 #   ./002-DNS_Setup.sh
 #
 # NOTES:
 #   - Run this script on the control plane node after CNI setup
 #   - Helps ensure DNS resolution works across all nodes in multi-cloud setup
+#   - Integrates automatic detection and fixes for common multi-cloud DNS issues
 # ============================================================================
 
 # Source the environment configuration
@@ -23,7 +27,14 @@ ENV_CONFIG_PATH="$(realpath "$SCRIPT_DIR/../0100-Chapter_1/001-Environment_Confi
 
 if [ ! -f "$ENV_CONFIG_PATH" ]; then
     echo "Error: Environment configuration file not found at $ENV_CONFIG_PATH"
-    exit 1
+    echo "Creating a minimal environment configuration for DNS setup"
+    # Create a default configuration if the environment config doesn't exist
+    mkdir -p "$(dirname "$ENV_CONFIG_PATH")"
+    cat > "$ENV_CONFIG_PATH" << EOF
+#!/bin/bash
+# Default environment configuration with DNS settings
+DNS_SERVICE_IP="10.1.0.10"
+EOF
 fi
 
 source "$ENV_CONFIG_PATH"
@@ -49,12 +60,151 @@ check_status() {
   fi
 }
 
+# Function to detect and fix service CIDR mismatches
+detect_fix_service_cidr_mismatch() {
+    echo "Checking for service CIDR configuration and DNS service IP mismatch..."
+    
+    # Try different methods to get the service CIDR
+    SERVICE_CIDR=$(kubectl get cm -n kube-system kubeadm-config -o jsonpath='{.data.ClusterConfiguration}' 2>/dev/null | grep "serviceSubnet" | awk '{print $2}')
+    
+    if [ -z "$SERVICE_CIDR" ]; then
+        # Try finding from API server configuration
+        MASTER_NODE=$(kubectl get nodes | grep control-plane | awk '{print $1}')
+        if [ -n "$MASTER_NODE" ]; then
+            SERVICE_CIDR=$(ssh $MASTER_NODE "grep -r service-cluster-ip-range /etc/kubernetes/" 2>/dev/null | head -n 1 | grep -o 'service-cluster-ip-range=[^ ]*' | cut -d= -f2)
+        fi
+    fi
+    
+    if [ -z "$SERVICE_CIDR" ]; then
+        echo "⚠️ Could not determine service CIDR from standard locations, using configured DNS_SERVICE_IP=$DNS_SERVICE_IP"
+        return 0
+    fi
+    
+    echo "Detected service CIDR: $SERVICE_CIDR"
+    
+    # Get current DNS service IP if it exists
+    CURRENT_DNS_IP=$(kubectl get svc -n kube-system kube-dns -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+    
+    if [ -n "$CURRENT_DNS_IP" ]; then
+        echo "Current kube-dns Service IP: $CURRENT_DNS_IP"
+        
+        # Check if service CIDR and DNS IP match
+        BASE_IP=$(echo $SERVICE_CIDR | cut -d'/' -f1 | cut -d'.' -f1,2)
+        CURRENT_BASE=$(echo $CURRENT_DNS_IP | cut -d'.' -f1,2)
+        
+        if [[ "$BASE_IP" != "$CURRENT_BASE" ]]; then
+            echo "⚠️ Mismatch detected between service CIDR ($SERVICE_CIDR) and DNS service IP ($CURRENT_DNS_IP)"
+            echo "Will recreate DNS service with correct IP after deleting existing resources."
+            
+            # Calculate the proper DNS service IP based on service CIDR
+            NEW_DNS_IP="${BASE_IP}.0.10"
+            DNS_SERVICE_IP="$NEW_DNS_IP"
+            echo "Updated DNS service IP to match service CIDR: $DNS_SERVICE_IP"
+            
+            # We'll delete the service in the cleanup phase, so return now
+            return 0
+        else
+            echo "✅ DNS service IP correctly matches service CIDR"
+        fi
+    else
+        # No existing DNS service, extract base IP for new service
+        BASE_IP=$(echo $SERVICE_CIDR | cut -d'/' -f1 | cut -d'.' -f1,2)
+        NEW_DNS_IP="${BASE_IP}.0.10"
+        
+        if [[ "$DNS_SERVICE_IP" != "$NEW_DNS_IP" ]]; then
+            echo "⚠️ Configured DNS service IP ($DNS_SERVICE_IP) doesn't match service CIDR ($SERVICE_CIDR)"
+            DNS_SERVICE_IP="$NEW_DNS_IP"
+            echo "Updated DNS service IP to match service CIDR: $DNS_SERVICE_IP"
+        fi
+    fi
+}
+
+# Function to check if we should enable hostNetwork mode
+should_enable_host_network() {
+    # Look for signs that we're in a multi-cloud environment
+    NODE_COUNT=$(kubectl get nodes --no-headers | wc -l)
+    UNIQUE_SUBNETS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' | cut -d'.' -f1,2 | sort | uniq | wc -l)
+    
+    if [[ $NODE_COUNT -gt 1 && $UNIQUE_SUBNETS -gt 1 ]]; then
+        echo "Detected multiple network subnets in a multi-node cluster."
+        echo "This is likely a multi-cloud setup that needs hostNetwork for reliable DNS."
+        return 0  # true in bash
+    fi
+    
+    # Check if we have nodelocaldns setup
+    if kubectl get daemonset -n kube-system nodelocaldns > /dev/null 2>&1; then
+        echo "Detected nodelocaldns DaemonSet. Enabling hostNetwork won't be needed."
+        return 1  # false in bash
+    fi
+    
+    # Check for cross-subnet pod communication issues
+    echo "Testing cross-node pod communication..."
+    NODES=$(kubectl get nodes -o name | cut -d'/' -f2)
+    HAS_CONNECTION_ISSUES=0
+    
+    for NODE in $NODES; do
+        # Skip if this is a control plane node with NoSchedule taint
+        if kubectl get node $NODE -o jsonpath='{.spec.taints[*].effect}' | grep -q "NoSchedule"; then
+            echo "Skipping control plane node $NODE for communication test"
+            continue
+        fi
+        
+        # Check if we can run a quick test pod on this node
+        echo "Testing network from node $NODE..."
+        cat > /tmp/test-pod-$NODE.yaml << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-net-$NODE
+  namespace: default
+spec:
+  nodeName: $NODE
+  containers:
+  - name: network-test
+    image: busybox:latest
+    command:
+      - sleep
+      - "60"
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+EOF
+        
+        kubectl apply -f /tmp/test-pod-$NODE.yaml > /dev/null
+        
+        # Wait for pod to be running
+        for i in {1..10}; do
+            if kubectl get pod test-net-$NODE | grep -q Running; then
+                break
+            fi
+            sleep 3
+        done
+        
+        # Check if pod can ping DNS IP or other known service
+        if ! kubectl exec -i test-net-$NODE -- ping -c 2 -W 5 $DNS_SERVICE_IP > /dev/null 2>&1; then
+            echo "⚠️ Pod on node $NODE cannot reach DNS service IP directly."
+            HAS_CONNECTION_ISSUES=1
+        fi
+        
+        # Cleanup test pod
+        kubectl delete pod test-net-$NODE --force --grace-period=0 > /dev/null
+        rm -f /tmp/test-pod-$NODE.yaml
+    done
+    
+    if [ $HAS_CONNECTION_ISSUES -eq 1 ]; then
+        echo "Detected cross-node networking issues that may impact DNS. Will enable hostNetwork."
+        return 0  # true in bash
+    fi
+    
+    # Default to not using host network
+    return 1  # false in bash
+}
+
 # Create a temporary directory for manifests
 MANIFEST_DIR="/tmp/coredns-manifests"
 mkdir -p $MANIFEST_DIR
 
 # ============================================================================
-# STEP 1: Verify CNI is working properly
+# STEP 1: Verify CNI is working properly and detect potential DNS issues
 # ============================================================================
 echo "Verifying that CNI is working properly before DNS setup..."
 
@@ -70,6 +220,9 @@ else
     echo "✅ All nodes are in Ready state. CNI appears to be working properly."
 fi
 
+# Proactively check for service CIDR and DNS IP mismatches
+detect_fix_service_cidr_mismatch
+
 # Check current CoreDNS status
 echo "Checking current CoreDNS status..."
 kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide
@@ -79,6 +232,15 @@ echo ""
 echo "Getting CoreDNS details..."
 COREDNS_IMAGE=$(kubectl -n kube-system get deployment coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "registry.k8s.io/coredns/coredns:v1.11.3")
 echo "Current CoreDNS image: $COREDNS_IMAGE"
+
+# Determine if we should use hostNetwork mode
+USE_HOST_NETWORK=false
+if should_enable_host_network; then
+    echo "Enabling CoreDNS hostNetwork mode for better multi-cloud compatibility"
+    USE_HOST_NETWORK=true
+else
+    echo "Standard CoreDNS networking mode will be used"
+fi
 
 # ============================================================================
 # STEP 2: Remove any existing problematic DNS configuration
@@ -105,11 +267,59 @@ if ! kubectl -n kube-system get serviceaccount coredns > /dev/null 2>&1; then
     check_status "CoreDNS service account creation"
 fi
 
+# Set up proper RBAC permissions for CoreDNS
+echo "Setting up RBAC permissions for CoreDNS..."
+cat > $MANIFEST_DIR/coredns-rbac.yaml << EOF
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:coredns
+  labels:
+    kubernetes.io/bootstrapping: rbac-defaults
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - endpoints
+  - services
+  - pods
+  - namespaces
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - discovery.k8s.io
+  resources:
+  - endpointslices
+  verbs:
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:coredns
+  labels:
+    kubernetes.io/bootstrapping: rbac-defaults
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:coredns
+subjects:
+- kind: ServiceAccount
+  name: coredns
+  namespace: kube-system
+EOF
+
+kubectl apply -f $MANIFEST_DIR/coredns-rbac.yaml
+check_status "CoreDNS RBAC configuration"
+
 # ============================================================================
 # STEP 3: Set up CoreDNS components
 # ============================================================================
 
-# Step 1: Create CoreDNS ConfigMap with optimized configuration
+# Step 1: Create CoreDNS ConfigMap with optimized configuration for multi-cloud
 echo "Creating CoreDNS ConfigMap..."
 cat > $MANIFEST_DIR/coredns-configmap.yaml << EOF
 apiVersion: v1
@@ -154,6 +364,32 @@ check_status "CoreDNS ConfigMap creation"
 # Step 2: Create CoreDNS service
 echo "Creating CoreDNS service..."
 
+# Get current cluster service CIDR from the API server configuration
+CLUSTER_SERVICE_CIDR=$(kubectl get cm -n kube-system kubeadm-config -o jsonpath='{.data.ClusterConfiguration}' 2>/dev/null | grep "serviceSubnet" | awk '{print $2}')
+
+# Default to 10.1.0.0/16 if not found and not already set by our detection function
+if [ -z "$CLUSTER_SERVICE_CIDR" ]; then
+    CLUSTER_SERVICE_CIDR="10.1.0.0/16"
+    echo "Using default service CIDR: $CLUSTER_SERVICE_CIDR"
+else
+    echo "Found service CIDR from cluster configuration: $CLUSTER_SERVICE_CIDR"
+fi
+
+# Calculate DNS IP if not specified (typically 10th address in service CIDR)
+if [ -z "$DNS_SERVICE_IP" ]; then
+    # Extract base IP from CIDR
+    BASE_IP=$(echo $CLUSTER_SERVICE_CIDR | cut -d '/' -f1)
+    
+    # Split the IP address into octets
+    IFS='.' read -r -a IP_OCTETS <<< "$BASE_IP"
+    
+    # Set DNS IP to x.x.0.10 where x.x is from the base service CIDR
+    DNS_SERVICE_IP="${IP_OCTETS[0]}.${IP_OCTETS[1]}.0.10"
+    echo "Calculated DNS service IP: $DNS_SERVICE_IP"
+fi
+
+echo "Using DNS Service IP: $DNS_SERVICE_IP"
+
 cat > $MANIFEST_DIR/coredns-service.yaml << EOF
 apiVersion: v1
 kind: Service
@@ -170,7 +406,7 @@ metadata:
 spec:
   selector:
     k8s-app: kube-dns
-  clusterIP: ${DNS_SERVICE_IP:-"10.1.0.10"}
+  clusterIP: ${DNS_SERVICE_IP}
   ports:
   - name: dns
     port: 53
@@ -186,8 +422,16 @@ EOF
 kubectl apply -f $MANIFEST_DIR/coredns-service.yaml
 check_status "CoreDNS service creation"
 
-# Step 3: Create CoreDNS deployment with 3 replicas
+# Step 3: Create CoreDNS deployment with 3 replicas and hostNetwork if needed
 echo "Creating CoreDNS deployment..."
+
+# Prepare the deployment YAML, conditionally setting hostNetwork
+if [ "$USE_HOST_NETWORK" = true ]; then
+    echo "Enabling hostNetwork mode for CoreDNS pods"
+    HOST_NETWORK_LINE="      hostNetwork: true"
+else
+    HOST_NETWORK_LINE=""
+fi
 
 cat > $MANIFEST_DIR/coredns-deployment.yaml << EOF
 apiVersion: apps/v1
@@ -214,6 +458,7 @@ spec:
     spec:
       priorityClassName: system-cluster-critical
       serviceAccountName: coredns
+${HOST_NETWORK_LINE}
       tolerations:
       - key: "CriticalAddonsOnly"
         operator: "Exists"
@@ -229,6 +474,8 @@ spec:
       - key: "node.kubernetes.io/unreachable"
         operator: "Exists"
         effect: "NoSchedule"
+      # Providing universal tolerance for better multi-cloud scheduling
+      - operator: "Exists"
       topologySpreadConstraints:
       - maxSkew: 1
         topologyKey: kubernetes.io/hostname
@@ -606,11 +853,76 @@ EOF
         echo "❌ DNS resolution STILL FAILING after configuration updates"
         
         echo "Final emergency fix - patching CoreDNS deployment to use host network:"
-        kubectl patch deployment coredns -n kube-system --type=strategic-merge -p='{"spec":{"template":{"spec":{"hostNetwork":true}}}}'
+        # Fix the patch syntax - this was causing the error in your original run
+        kubectl patch deployment coredns -n kube-system --type=json -p='[{"op":"add", "path":"/spec/template/spec/hostNetwork", "value":true}]'
         sleep 15
+        
+        # Restart CoreDNS pods to ensure they pick up the host network setting
+        kubectl rollout restart deployment coredns -n kube-system
+        kubectl rollout status deployment coredns -n kube-system --timeout=60s
         
         echo "Testing one more time with CoreDNS on host network:"
         kubectl exec -i dns-test -- nslookup kubernetes.default || echo "Still failing after host network change"
+        
+        # If we're still failing, try creating a NodePort service as last resort
+        if ! kubectl exec -i dns-test -- nslookup kubernetes.default > /dev/null 2>&1; then
+            echo "Creating a NodePort service for DNS as last resort..."
+            cat > $MANIFEST_DIR/coredns-nodeport.yaml << EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: coredns-nodeport
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns-nodeport
+spec:
+  selector:
+    k8s-app: kube-dns
+  type: NodePort
+  ports:
+  - name: dns
+    port: 53
+    targetPort: 53
+    protocol: UDP
+    nodePort: 31053
+  - name: dns-tcp
+    port: 53
+    targetPort: 53
+    protocol: TCP
+    nodePort: 31054
+EOF
+            kubectl apply -f $MANIFEST_DIR/coredns-nodeport.yaml
+            
+            # Update node resolv.conf to use the NodePort
+            echo "Updating test pod to use NodePort for DNS..."
+            NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+            
+            # Create test pod with custom DNS
+            cat > $MANIFEST_DIR/nodeport-dns-test.yaml << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nodeport-dns-test
+spec:
+  containers:
+  - name: dns-test
+    image: busybox:latest
+    command:
+      - sleep
+      - "3600"
+    env:
+    - name: NAMESERVER
+      value: "${NODE_IP}:31053"
+EOF
+            kubectl apply -f $MANIFEST_DIR/nodeport-dns-test.yaml
+            
+            echo "Waiting for NodePort DNS test pod..."
+            sleep 15
+            
+            echo "Testing NodePort-based DNS resolution:"
+            kubectl exec -i nodeport-dns-test -- nslookup kubernetes.default "${NODE_IP}:31053" || \
+              echo "NodePort DNS test failed too. Manual intervention required."
+        fi
     fi
     
     # Clean up test pods
